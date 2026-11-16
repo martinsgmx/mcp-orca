@@ -1,0 +1,35 @@
+# Example mcp-orca configuration (v1 scaffold)
+# See docs/DESIGN.md for the design and integration placeholders.
+
+[server]
+transport = "stdio"
+
+[workspace]
+root = "~/.local/share/mcp-orca"
+
+[engine]
+# Generic adapter: wire your OrcaSlicer CLI (host) or Docker image here.
+# Slicing is disabled while slice_command is empty.
+runner = "binary"
+binary = "orca-slicer"
+# docker_image = "your-orcaslicer-image:tag"
+timeout_secs = 900
+max_concurrent_jobs = 2
+
+# Argv template. Placeholders:
+#   {binary} {image} {jobdir} {gcode} {models} {model}
+#   {printer} {filament} {process} {project} {overrides} {settings} {plan_json}
+# `{models}` expands to one argument per staged model; `{model}` is the first.
+# slice_command = ["{binary}", "--slice", "{models}", "--output", "{gcode}"]
+# docker_command = ["docker", "run", "--rm", "-v", "{jobdir}:{jobdir}", "-w", "{jobdir}"]
+
+[profiles]
+# Bounded discovery: explicit paths + OS-detected common defaults.
+# search_paths = ["/path/to/profiles"]
+use_os_defaults = true
+
+[policy]
+allow_workspace_writes = true
+allow_slicing = true
+allow_export = true
+allow_delete = true

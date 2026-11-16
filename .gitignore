@@ -1,0 +1,41 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Local runtime workspace
+/.mcp-orca/
+
+# Generated/imported 3D artifacts
+*.gcode
+*.stl
+*.3mf
+*.obj
+*.step
+*.stp
+!tests/fixtures/*.stl
+!tests/fixtures/*.3mf
+!tests/fixtures/*.obj
+!examples/**/*.stl
+!examples/**/*.3mf
+!examples/**/*.obj
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+/mcp-orca.toml
+*.local.toml
+!examples/mcp-orca.toml
+!examples/*.local.toml
+
+# Logs and runtime output
+*.log
+*.jsonl
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
