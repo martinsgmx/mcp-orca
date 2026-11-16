@@ -650,15 +650,30 @@ impl Engine {
                 }
                 Ok(())
             }
-            count => {
-                let names = candidates
-                    .iter()
-                    .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Err(Error::Engine(format!(
-                    "OrcaSlicer produced {count} plate G-code files ({names}); the built-in orca preset expects one plate per job. Arrange the models onto a single plate, or set engine.slice_command for per-plate handling."
-                )))
+            _ => {
+                use std::io::Write as _;
+                let mut out = std::fs::File::create(output_path)?;
+                for (index, produced) in candidates.iter().enumerate() {
+                    let name = produced
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("plate.gcode");
+                    writeln!(out, "; ---- mcp-orca plate: {name} ----")?;
+                    let data = std::fs::read(produced)?;
+                    out.write_all(&data)?;
+                    if !data.ends_with(b"\n") {
+                        out.write_all(b"\n")?;
+                    }
+                    if index + 1 < candidates.len() {
+                        out.write_all(b"\n")?;
+                    }
+                }
+                tracing::info!(
+                    target: "mcp_orca::engine",
+                    plates = candidates.len(),
+                    "collected multi-plate OrcaSlicer output into output.gcode"
+                );
+                Ok(())
             }
         }
     }

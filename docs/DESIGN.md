@@ -119,7 +119,7 @@ Researched from the upstream OrcaSlicer wiki (`cli_mode`, `cli_actions`, `cli_mi
 - **Invocation:** staged model(s) as positional inputs, then `--load-settings "process.json;printer.json"` and `--load-filaments filament.json` (semicolon-separated; printer+process share one `--load-settings` value), merged setting overrides as `--key=value`, `--arrange 1`, `--slice 0` (all plates), `--outputdir {jobdir}`, and `--export-settings {jobdir}/orca_effective_settings.json`.
 - **Preset files:** OrcaSlicer requires native machine/process/filament JSON presets. Selections must resolve to `.json` files (direct path, discovered/indexed preset entry, or a workspace custom-profile artifact's `base_profile`). Workspace profile artifacts still contribute merged setting overrides.
 - **Setting overrides / key mapping:** CLI flags use hyphens; setting keys are converted underscore→hyphen (e.g. `layer_height` → `--layer-height`). Booleans are rendered as `1`/`0`; vector/scalar-array values are comma-joined. Preset-identity/inheritance, print-host credential, and internal extruder-bookkeeping keys excluded by Orca's CLI contract are omitted from `--key=value` overrides.
-- **Output handling:** Orca writes `plate_<N>.gcode` into `--outputdir`. The preset collects a single-plate result into the job's `output.gcode` artifact and fails clearly on zero or multi-plate output (multi-plate/custom naming requires `engine.slice_command`).
+- **Output handling:** Orca writes `plate_<N>.gcode` into `--outputdir`. The preset collects a single-plate result by renaming/copying it to `output.gcode`; multi-plate output is concatenated in sorted order into `output.gcode` with per-plate markers while preserving individual plate files in the job directory (custom `engine.slice_command` remains the escape hatch for per-plate artifact handling).
 - **Staging:** models and resolved preset JSONs are copied into the job directory so host and Docker runs use mounted/invocation-local paths.
 
 ### 5.3 Custom argv template (`engine.slice_command`)
@@ -150,7 +150,7 @@ A slice invocation must be expressible as:
 - **Overrides:** a map of setting overrides (typed/known keys + pass-through keys) applied according to the adapter’s mechanism.
 - **Execution controls:** timeout, cancellation token, optional thread/resource hints, environment.
 
-**Environment-specific:** real OrcaSlicer binary/image availability, exact preset naming/contents, multi-plate workflows, and version-specific CLI behavior remain deployment concerns; `slice_command` and Docker mounts provide the escape hatch.
+**Environment-specific:** real OrcaSlicer binary/image availability, exact preset naming/contents, per-plate artifact workflows, and version-specific CLI behavior remain deployment concerns; `slice_command` and Docker mounts provide the escape hatch.
 
 ### 5.3 Reliability & degradation
 - `doctor` reports runner availability/config validity and profile source health without requiring a successful slice.

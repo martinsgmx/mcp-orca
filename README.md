@@ -47,7 +47,7 @@ Uses the documented OrcaSlicer headless CLI contract (researched from the upstre
 - Invocation shape: staged model(s) + `--load-settings "process.json;printer.json"` + `--load-filaments filament.json` + merged setting overrides + `--arrange 1 --slice 0 --outputdir {jobdir} --export-settings {jobdir}/orca_effective_settings.json`.
 - **Native presets required:** `printer`/`filament`/`process` selections must resolve to real `.json` preset files (direct path, indexed/discovered preset, or a workspace custom-profile artifact whose `base_profile` points at one). Workspace profile artifacts still contribute merged setting overrides.
 - **Setting overrides:** merged workspace/override settings are passed as `--key=value`. OrcaSlicer CLI flags use hyphens, so setting keys are converted underscore→hyphen (`layer_height` → `--layer-height`). Booleans become `1`/`0`, arrays are comma-joined. Preset-identity, print-host, and internal extruder-bookkeeping keys that Orca excludes from CLI overrides are omitted.
-- **Output:** Orca writes `plate_<N>.gcode` into `--outputdir`; the preset collects a single-plate result into the job's `output.gcode` artifact. Multi-plate output requires a custom `slice_command`.
+- **Output:** Orca writes `plate_<N>.gcode` into `--outputdir`; the preset collects results into the job's `output.gcode` artifact (single plate: renamed/copied; multi-plate: concatenated in sorted order with plate markers, while individual plate files remain in the job directory). Use a custom `slice_command` for per-plate artifact handling.
 - **Docker:** preset JSONs are staged into the mounted job directory so the container can read them.
 
 ```toml
