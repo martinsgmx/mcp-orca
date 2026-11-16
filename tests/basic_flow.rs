@@ -614,3 +614,85 @@ async fn out_of_band_approval_mode_blocks_mcp_decisions() {
         true
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn docker_runner_uses_configured_command_and_stages_gcode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let td = tempdir().unwrap();
+    let shim = td.path().join("fake-docker.sh");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\n# Docker shim: argv = <image> <gcode> <model...>\nset -eu\nimage=\"$1\"\nout=\"$2\"\nprintf '; docker shim\\n; image=%s\\n; env=%s\\nG28\\nG1 X5 Y5 E1\\n' \"$image\" \"${MCP_ORCA_TEST_ENV:-missing}\" > \"$out\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut cfg = Config::default();
+    cfg.workspace.root = td.path().join("ws").to_string_lossy().to_string();
+    cfg.profiles.use_os_defaults = false;
+    cfg.profiles.search_paths = vec![];
+    cfg.engine.runner = mcp_orca::config::EngineRunner::Docker;
+    cfg.engine.docker_image = Some("fake-orca-image:test".into());
+    cfg.engine.docker_command = vec![shim.to_string_lossy().to_string()];
+    cfg.engine.slice_command = vec!["{image}".into(), "{gcode}".into(), "{models}".into()];
+    cfg.engine
+        .env
+        .insert("MCP_ORCA_TEST_ENV".into(), "docker-env".into());
+
+    let ctx = Arc::new(ToolContext::new(cfg).unwrap());
+    let registry = ToolRegistry::new();
+
+    let stl = "solid t\n  facet normal 0 0 1\n    outer loop\n      vertex 0 0 0\n      vertex 1 0 0\n      vertex 0 1 0\n    endloop\n  endfacet\nendsolid t\n";
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, stl.as_bytes());
+    let import = registry
+        .call(
+            &ctx,
+            "orca_artifact_import",
+            Some(json!({
+                "name": "tri.stl", "kind": "mesh", "format": "stl", "data": b64
+            })),
+        )
+        .await
+        .unwrap();
+    let art_id = import.structured_content.as_ref().unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let slice = registry
+        .call(
+            &ctx,
+            "orca_slice",
+            Some(json!({
+                "model_artifact_ids": [art_id],
+                "printer": "generic_printer",
+                "filament": "generic_pla",
+                "process": "draft",
+                "wait": true,
+                "wait_timeout_secs": 30
+            })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(slice.is_error, Some(false));
+    let body = slice.structured_content.as_ref().unwrap();
+    assert_eq!(body["state"], "completed", "job body: {body:?}");
+    let gcode_id = body["gcode_artifact"].as_str().unwrap().to_string();
+
+    let text = registry
+        .call(
+            &ctx,
+            "orca_artifact_read_text",
+            Some(json!({"artifact_id": gcode_id})),
+        )
+        .await
+        .unwrap();
+    let text = text.structured_content.as_ref().unwrap()["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("image=fake-orca-image:test"), "text: {text}");
+    assert!(text.contains("env=docker-env"), "text: {text}");
+}

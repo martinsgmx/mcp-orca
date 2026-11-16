@@ -253,13 +253,13 @@ Names/prefix and grouping follow the `mcp-cura` feel; final schemas/args are fin
 - `orca_slice_status`, `orca_slice_wait`, `orca_slice_cancel`, `orca_slice_list`
 
 ### 12.6 G-code (minimal v1 / extensible)
-- At minimum, G-code is retrievable as an artifact; add `orca_gcode_inspect` (and later verify/prepare) if/when aligned with v1 needs — keep interface consistent with safety model.
+- `orca_gcode_inspect` reports line/command/comment counts, layer markers, nozzle/bed temperature maxima, filament usage, extrude/travel moves, move bounds, and header time estimates. It never executes G-code.
 
 ## 13. CLI, transport, and DX
 
 - **Binary:** `mcp-orca`
 - **Default behavior:** running with no subcommand starts the **stdio** MCP server (stdout reserved for protocol/messages; diagnostics to stderr).
-- **Subcommands (planned):** `serve` (stdio/http), `doctor`, `tools` (list/describe), `print-config`, `init`, approval management commands as needed.
+- **Subcommands (implemented):** `serve` (stdio/http), `doctor`, `tools` (list), `print-config`, `init`, and `approvals list|approve|deny` for out-of-band decisions.
 - **HTTP (optional):** token-gated when not loopback (unless explicitly overridden), with health/transport endpoints documented.
 - **Docs/examples:** README, configuration reference, safety model, engine/profile setup (host + Docker with mount examples), and client config snippets (e.g. Claude Desktop/OpenCode style) mirroring `mcp-cura`’s documentation ergonomics.
 

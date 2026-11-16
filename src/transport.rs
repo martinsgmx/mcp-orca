@@ -52,7 +52,13 @@ impl AuthProvider for StaticTokenAuthProvider {
                 client_id: Some("mcp-orca-static-token".into()),
                 user_id: None,
                 scopes: None,
-                expires_at: None,
+                // rust-mcp-sdk's auth middleware rejects tokens without an
+                // expiration. Static operator-configured tokens do not expire,
+                // so report a far-future timestamp rather than `None`.
+                expires_at: Some(
+                    std::time::SystemTime::now()
+                        + std::time::Duration::from_secs(100 * 365 * 24 * 60 * 60),
+                ),
                 audience: None,
                 extra: None,
             })

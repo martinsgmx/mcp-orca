@@ -104,9 +104,11 @@ G-code: `orca_gcode_inspect`.
 ```sh
 cargo test
 cargo clippy --all-targets
+./scripts/smoke.sh      # fmt-adjacent checks: tests, clippy, tools, doctor, stdio handshake
+./scripts/http_smoke.sh # token-gated HTTP: 401 without token, 200 with token
 ```
 
-The integration suite uses a fake slicer script to exercise the full import → mesh → slice → G-code artifact path without OrcaSlicer installed.
+The integration suite uses fake host/Docker slicer scripts to exercise the full import → mesh → slice → G-code artifact path without OrcaSlicer installed, plus approval, profile-resolution, and mesh (STL/OBJ) flows.
 
 ## Documentation
 
