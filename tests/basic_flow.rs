@@ -696,3 +696,320 @@ async fn docker_runner_uses_configured_command_and_stages_gcode() {
     assert!(text.contains("image=fake-orca-image:test"), "text: {text}");
     assert!(text.contains("env=docker-env"), "text: {text}");
 }
+
+#[cfg(unix)]
+fn write_script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, body).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+async fn import_test_cube(registry: &ToolRegistry, ctx: &Arc<ToolContext>) -> String {
+    let stl = "solid t\n  facet normal 0 0 1\n    outer loop\n      vertex 0 0 0\n      vertex 1 0 0\n      vertex 0 1 0\n    endloop\n  endfacet\nendsolid t\n";
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, stl.as_bytes());
+    let import = registry
+        .call(
+            ctx,
+            "orca_artifact_import",
+            Some(json!({
+                "name": "tri.stl", "kind": "mesh", "format": "stl", "data": b64
+            })),
+        )
+        .await
+        .unwrap();
+    import.structured_content.as_ref().unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn background_slice_job_status_list_wait_lifecycle() {
+    let td = tempdir().unwrap();
+    let script = td.path().join("slow-slicer.sh");
+    write_script(
+        &script,
+        "#!/bin/sh\nset -eu\nsleep 0.4\nprintf '; slow slicer\\nG28\\nG1 X1 Y1 E1\\n' > \"$1\"\n",
+    );
+
+    let mut cfg = Config::default();
+    cfg.workspace.root = td.path().join("ws").to_string_lossy().to_string();
+    cfg.profiles.use_os_defaults = false;
+    cfg.profiles.search_paths = vec![];
+    cfg.engine.binary = script.to_string_lossy().to_string();
+    cfg.engine.slice_command = vec!["{binary}".into(), "{gcode}".into(), "{models}".into()];
+
+    let ctx = Arc::new(ToolContext::new(cfg).unwrap());
+    let registry = ToolRegistry::new();
+    let art_id = import_test_cube(&registry, &ctx).await;
+
+    let started = registry
+        .call(
+            &ctx,
+            "orca_slice",
+            Some(json!({
+                "model_artifact_ids": [art_id],
+                "printer": "generic_printer",
+                "filament": "generic_pla",
+                "process": "draft"
+            })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(started.is_error, Some(false));
+    let job_id = started.structured_content.as_ref().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let status = registry
+        .call(&ctx, "orca_slice_status", Some(json!({"job_id": job_id})))
+        .await
+        .unwrap();
+    let state = status.structured_content.as_ref().unwrap()["state"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        ["queued", "running", "completed"].contains(&state.as_str()),
+        "unexpected state: {state}"
+    );
+
+    let listed = registry
+        .call(&ctx, "orca_slice_list", Some(json!({"limit": 10})))
+        .await
+        .unwrap();
+    let jobs = listed.structured_content.as_ref().unwrap()["jobs"]
+        .as_array()
+        .unwrap();
+    assert!(jobs
+        .iter()
+        .any(|j| j["id"].as_str() == Some(job_id.as_str())));
+
+    let waited = registry
+        .call(
+            &ctx,
+            "orca_slice_wait",
+            Some(json!({"job_id": job_id, "timeout_secs": 30})),
+        )
+        .await
+        .unwrap();
+    let body = waited.structured_content.as_ref().unwrap();
+    assert_eq!(body["state"], "completed", "body: {body:?}");
+    assert!(body["gcode_artifact"].as_str().is_some());
+
+    // Cancelling a finished job is rejected clearly.
+    let cancel = registry
+        .call(&ctx, "orca_slice_cancel", Some(json!({"job_id": job_id})))
+        .await;
+    assert!(cancel.is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn background_slice_job_can_be_cancelled() {
+    let td = tempdir().unwrap();
+    let script = td.path().join("hanging-slicer.sh");
+    write_script(
+        &script,
+        "#!/bin/sh\nset -eu\nsleep 30\nprintf '; never\\n' > \"$1\"\n",
+    );
+
+    let mut cfg = Config::default();
+    cfg.workspace.root = td.path().join("ws").to_string_lossy().to_string();
+    cfg.profiles.use_os_defaults = false;
+    cfg.profiles.search_paths = vec![];
+    cfg.engine.binary = script.to_string_lossy().to_string();
+    cfg.engine.slice_command = vec!["{binary}".into(), "{gcode}".into(), "{models}".into()];
+
+    let ctx = Arc::new(ToolContext::new(cfg).unwrap());
+    let registry = ToolRegistry::new();
+    let art_id = import_test_cube(&registry, &ctx).await;
+
+    let started = registry
+        .call(
+            &ctx,
+            "orca_slice",
+            Some(json!({
+                "model_artifact_ids": [art_id],
+                "printer": "generic_printer",
+                "filament": "generic_pla",
+                "process": "draft"
+            })),
+        )
+        .await
+        .unwrap();
+    let job_id = started.structured_content.as_ref().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Give the spawned task a moment to start; cancel works for queued or running jobs.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let cancelled = registry
+        .call(&ctx, "orca_slice_cancel", Some(json!({"job_id": job_id})))
+        .await
+        .unwrap();
+    assert_eq!(
+        cancelled.structured_content.as_ref().unwrap()["state"],
+        "cancelled"
+    );
+
+    let status = registry
+        .call(&ctx, "orca_slice_status", Some(json!({"job_id": job_id})))
+        .await
+        .unwrap();
+    assert_eq!(
+        status.structured_content.as_ref().unwrap()["state"],
+        "cancelled"
+    );
+}
+
+#[tokio::test]
+async fn profile_update_creates_new_version() {
+    let td = tempdir().unwrap();
+    let mut cfg = Config::default();
+    cfg.workspace.root = td.path().join("ws").to_string_lossy().to_string();
+    cfg.profiles.use_os_defaults = false;
+    cfg.profiles.search_paths = vec![];
+
+    let ctx = Arc::new(ToolContext::new(cfg).unwrap());
+    let registry = ToolRegistry::new();
+
+    let created = registry
+        .call(
+            &ctx,
+            "orca_profile_create",
+            Some(json!({
+                "name": "my-process", "kind": "process",
+                "settings": {"layer_height": 0.2}
+            })),
+        )
+        .await
+        .unwrap();
+    let profile_id = created.structured_content.as_ref().unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let updated = registry
+        .call(
+            &ctx,
+            "orca_profile_update",
+            Some(json!({
+                "artifact_id": profile_id,
+                "name": "my-process",
+                "kind": "process",
+                "settings": {"layer_height": 0.28, "sparse_infill_density": 25}
+            })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.is_error, Some(false));
+    let body = updated.structured_content.as_ref().unwrap();
+    let new_id = body["artifact"]["id"].as_str().unwrap();
+    assert_ne!(
+        new_id, profile_id,
+        "update must create a new artifact version"
+    );
+
+    let fetched = registry
+        .call(
+            &ctx,
+            "orca_profile_get",
+            Some(json!({"profile_id": new_id})),
+        )
+        .await
+        .unwrap();
+    let fetched_body = fetched.structured_content.as_ref().unwrap();
+    assert_eq!(fetched_body["profile"]["settings"]["layer_height"], 0.28);
+    assert_eq!(
+        fetched_body["profile"]["settings"]["sparse_infill_density"],
+        25
+    );
+}
+
+#[tokio::test]
+async fn artifact_export_requires_approval_and_writes_under_export_roots() {
+    use base64::Engine as _;
+
+    let td = tempdir().unwrap();
+    let export_dir = td.path().join("exports");
+    std::fs::create_dir_all(&export_dir).unwrap();
+
+    let mut cfg = Config::default();
+    cfg.workspace.root = td.path().join("ws").to_string_lossy().to_string();
+    cfg.workspace.export_roots = vec![export_dir.to_string_lossy().to_string()];
+    cfg.profiles.use_os_defaults = false;
+    cfg.profiles.search_paths = vec![];
+
+    let ctx = Arc::new(ToolContext::new(cfg).unwrap());
+    let registry = ToolRegistry::new();
+
+    let import = registry
+        .call(
+            &ctx,
+            "orca_artifact_import",
+            Some(json!({
+                "name": "note.txt", "kind": "other", "format": "txt",
+                "data": base64::engine::general_purpose::STANDARD.encode(b"export-me")
+            })),
+        )
+        .await
+        .unwrap();
+    let art_id = import.structured_content.as_ref().unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let destination = export_dir.join("note-out.txt");
+    let export = json!({"artifact_id": art_id, "path": destination.to_string_lossy()});
+
+    // First attempt creates a pending approval.
+    let blocked = registry
+        .call(&ctx, "orca_artifact_export", Some(export.clone()))
+        .await;
+    assert!(blocked.is_err());
+
+    let pending = registry
+        .call(&ctx, "orca_pending_approvals", None)
+        .await
+        .unwrap();
+    let approval_id = pending.structured_content.as_ref().unwrap()["pending"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    registry
+        .call(
+            &ctx,
+            "orca_approval_decide",
+            Some(json!({"approval_id": approval_id, "approve": true})),
+        )
+        .await
+        .unwrap();
+
+    let exported = registry
+        .call(&ctx, "orca_artifact_export", Some(export))
+        .await
+        .unwrap();
+    let exported_body = exported.structured_content.as_ref().unwrap();
+    assert_eq!(
+        exported_body["exported_to"],
+        destination.to_string_lossy().as_ref()
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), b"export-me");
+
+    // Destination outside export_roots is refused.
+    let outside = td.path().join("outside.txt");
+    let refused = registry
+        .call(
+            &ctx,
+            "orca_artifact_export",
+            Some(json!({"artifact_id": art_id, "path": outside.to_string_lossy()})),
+        )
+        .await;
+    assert!(refused.is_err());
+}

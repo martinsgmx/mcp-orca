@@ -244,9 +244,10 @@ Names/prefix and grouping follow the `mcp-cura` feel; final schemas/args are fin
 - `orca_mesh_inspect`, `orca_mesh_transform`, `orca_mesh_merge`
 
 ### 12.4 Profiles
-- `orca_profile_list`, `orca_profile_get`, `orca_profile_refresh`
-- `orca_profile_resolve` (effective settings from printer/filament/process + overrides/custom layers)
-- `orca_profile_create` / `orca_profile_update` (workspace-managed custom profiles/overrides; backup-before-in-place-edit invariant)
+- `orca_profile_list`, `orca_profile_refresh`: bounded discovery (explicit paths + OS-detected defaults); the visited directories and warnings are reported.
+- `orca_profile_get`: one discovered entry by id/path/name. Workspace custom-profile artifacts (`art_*`) are also resolved, returning their stored settings.
+- `orca_profile_resolve`: merges settings from workspace custom-profile artifacts for printer/filament/process, then applies overrides; native presets are resolved by reference for the engine adapter. Essentials (printer+filament+process) are required unless a project is supplied.
+- `orca_profile_create` / `orca_profile_update`: workspace-managed custom profiles as content-addressed JSON artifacts. External/user/system Orca installs are never mutated; updates always create a new version.
 
 ### 12.5 Slicing / jobs
 - `orca_slice` (start background job; optional wait)

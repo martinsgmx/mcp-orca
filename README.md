@@ -93,7 +93,7 @@ Artifacts: `orca_artifact_import`, `orca_artifact_list`, `orca_artifact_get`, `o
 
 Mesh: `orca_mesh_inspect` (STL + OBJ), `orca_mesh_transform` (translate/rotate/scale/mirror; STL or OBJ in, binary STL out), `orca_mesh_merge` (STL/OBJ in, binary STL out).
 
-Profiles: `orca_profile_list`, `orca_profile_get`, `orca_profile_refresh`, `orca_profile_resolve`, `orca_profile_create`, `orca_profile_update`.
+Profiles: `orca_profile_list`, `orca_profile_get` (discovered entries + workspace artifacts), `orca_profile_refresh`, `orca_profile_resolve` (merged effective settings), `orca_profile_create`, `orca_profile_update` (new content-addressed version).
 
 Slicing/jobs: `orca_slice`, `orca_slice_status`, `orca_slice_wait`, `orca_slice_cancel`, `orca_slice_list`.
 

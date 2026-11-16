@@ -196,6 +196,34 @@ fn get(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
     Box::pin(async move {
         let args = Args::parse(Some(args), &["profile_id"])?;
         let id = args.required_string("profile_id")?;
+
+        // Workspace-managed custom profiles are artifacts, not discovered files.
+        if id.starts_with("art_") {
+            if let Ok(record) = ctx.store.get(&id) {
+                if matches!(record.kind, crate::workspace::ArtifactKind::Profile) {
+                    let payload: Value = serde_json::from_slice(&ctx.store.read_bytes(&id)?)
+                        .unwrap_or_else(|_| json!({}));
+                    return Ok(json_result(
+                        &json!({
+                            "profile": {
+                                "id": record.id,
+                                "name": record.name,
+                                "kind": record.kind.as_str(),
+                                "format": record.format,
+                                "bytes": record.bytes,
+                                "source": "workspace_artifact",
+                                "base_profile": payload.get("base_profile").cloned().unwrap_or(Value::Null),
+                                "settings": payload.get("settings").cloned().unwrap_or(Value::Null),
+                                "metadata": payload.get("metadata").cloned().unwrap_or(Value::Null),
+                            },
+                            "note": "Workspace-managed custom profile artifact; settings are merged by orca_profile_resolve."
+                        }),
+                        None,
+                    ));
+                }
+            }
+        }
+
         let catalog = ctx.profiles.catalog()?;
         let entry = crate::profiles::ProfileIndex::find_entry(&catalog, &id).ok_or_else(|| {
             Error::Profile(format!(
