@@ -157,6 +157,9 @@ pub struct EngineConfig {
     /// Argv template for the slicer invocation. Supports placeholders documented in
     /// `engine` module docs (e.g. `{binary}`, `{gcode}`, `{models}`, `{printer}`).
     pub slice_command: Vec<String>,
+    /// Extra environment variables for the slicer process (host or Docker).
+    /// Values support the same placeholders as `slice_command`.
+    pub env: std::collections::BTreeMap<String, String>,
     pub timeout_secs: u64,
     pub max_concurrent_jobs: usize,
 }
@@ -169,6 +172,7 @@ impl Default for EngineConfig {
             docker_image: None,
             docker_command: Vec::new(),
             slice_command: Vec::new(),
+            env: std::collections::BTreeMap::new(),
             timeout_secs: 900,
             max_concurrent_jobs: 2,
         }

@@ -137,6 +137,7 @@ impl Engine {
         }
         for flag in ["--version", "-v", "version", "help", "--help"] {
             let mut cmd = Command::new(&binary);
+            cmd.envs(&self.config.engine.env);
             cmd.arg(flag).stdout(Stdio::piped()).stderr(Stdio::piped());
             if let Ok(Ok(out)) = timeout(Duration::from_secs(5), cmd.output()).await {
                 let mut text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -261,8 +262,19 @@ impl Engine {
             &plan_path,
             &output_path,
         )?;
+        let env = self.expand_env(
+            plan,
+            &job_dir.to_string_lossy(),
+            &output_path.to_string_lossy(),
+            &staged_models,
+            &overrides_path,
+            &settings_path,
+            &plan_path,
+            self.config.engine.docker_image.as_deref().unwrap_or(""),
+        );
         let mut command = Command::new(&argv[0]);
         command.args(&argv[1..]);
+        command.envs(env);
         command.current_dir(job_dir);
         command.kill_on_drop(true);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -310,6 +322,39 @@ impl Engine {
             stdout,
             stderr,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn expand_env(
+        &self,
+        plan: &SlicePlan,
+        job_dir: &str,
+        gcode: &str,
+        models: &[PathBuf],
+        overrides_path: &Path,
+        settings_path: &Path,
+        plan_path: &Path,
+        image: &str,
+    ) -> Vec<(String, String)> {
+        let mut out = Vec::with_capacity(self.config.engine.env.len());
+        for (key, value) in &self.config.engine.env {
+            let expanded = expand_template(
+                std::slice::from_ref(value),
+                plan,
+                job_dir,
+                gcode,
+                models,
+                overrides_path,
+                settings_path,
+                plan_path,
+                &self.config.engine.binary,
+                image,
+            );
+            if let Some(first) = expanded.into_iter().next() {
+                out.push((key.clone(), first));
+            }
+        }
+        out
     }
 
     #[allow(clippy::too_many_arguments)]

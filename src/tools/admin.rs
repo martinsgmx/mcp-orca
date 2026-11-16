@@ -128,6 +128,7 @@ fn policy_info(ctx: &ToolContext, _args: Value) -> ToolFuture<'_> {
                 "approval": {"mode": ctx.config.approval.mode, "ttl_secs": ctx.config.approval.ttl_secs},
                 "notes": [
                     "Export and destructive actions require approval by policy: pending request, decide with orca_approval_decide, then retry the identical call.",
+                    "approval.mode=in_band (default) or both allows MCP decisions; out_of_band requires `mcp-orca approvals approve|deny <id>` on the host.",
                     "No printer communication and no G-code execution."
                 ]
             }),
@@ -160,6 +161,15 @@ fn pending_approvals(ctx: &ToolContext, _args: Value) -> ToolFuture<'_> {
 
 fn approval_decide(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
     Box::pin(async move {
+        if matches!(
+            ctx.config.approval.mode,
+            crate::config::ApprovalMode::OutOfBand
+        ) {
+            return Err(Error::Approval(
+                "approval mode is out_of_band: decisions are not accepted over MCP. Use `mcp-orca approvals approve <id>` or `mcp-orca approvals deny <id>` on the host."
+                    .into(),
+            ));
+        }
         let args = Args::parse(Some(args), &["approval_id", "approve", "note"])?;
         let id = args.required_string("approval_id")?;
         let approve = args

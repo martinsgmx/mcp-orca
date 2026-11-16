@@ -44,6 +44,8 @@ max_concurrent_jobs = 2
 # {model} {printer} {filament} {process} {project} {overrides} {settings} {plan_json}
 # slice_command = ["{binary}", "--slice", "{models}", "--output", "{gcode}"]
 # docker_command = ["docker", "run", "--rm", "-v", "{jobdir}:{jobdir}", "-w", "{jobdir}"]
+# Extra environment variables for the slicer process (placeholder-expanded).
+# env = { ORCA_PROFILE_DIR = "{jobdir}/profiles" }
 
 [profiles]
 # Bounded discovery: explicit paths + OS-detected common defaults (no whole-system scan).
@@ -58,6 +60,8 @@ allow_export = true
 allow_delete = true
 
 [approval]
+# in_band (default) / out_of_band / both. out_of_band disables MCP-side
+# decisions; use `mcp-orca approvals approve|deny <id>` instead.
 mode = "in_band"
 ttl_secs = 120
 
@@ -94,9 +98,39 @@ enum Command {
     Tools,
     /// Write a starter configuration file.
     Init(InitArgs),
+    /// Inspect or decide approvals out of band (no MCP connection).
+    Approvals(ApprovalsArgs),
 }
 
-#[derive(Debug, Args, Default)]
+#[derive(Debug, Args)]
+struct ApprovalsArgs {
+    #[command(subcommand)]
+    action: ApprovalsAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum ApprovalsAction {
+    /// List pending, unexpired approval requests.
+    List,
+    /// Approve a pending request.
+    Approve {
+        /// Approval id (apr_...).
+        approval_id: String,
+        /// Optional note stored with the decision.
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Deny a pending request.
+    Deny {
+        /// Approval id (apr_...).
+        approval_id: String,
+        /// Optional note stored with the decision.
+        #[arg(long)]
+        note: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Args, Default)]
 struct ServeArgs {
     /// Transport: stdio (default) or http.
     #[arg(long, value_name = "TRANSPORT")]
@@ -149,39 +183,86 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    init_tracing();
     match cli.command {
-        None | Some(Command::Serve(_)) => {
-            let mut config = Config::load(cli.config.as_deref())?;
-            if let Some(Command::Serve(args)) = cli.command {
-                apply_serve_args(&mut config, args);
-            }
-            serve(config).await
-        }
-        Some(Command::Doctor(args)) => {
-            let mut config = Config::load(cli.config.as_deref())?;
-            if let Some(bin) = args.engine_bin {
-                config.engine.binary = bin;
-            }
-            doctor(config).await
-        }
-        Some(Command::PrintConfig) => {
-            let config = Config::load(cli.config.as_deref())?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&config.public_view()).unwrap_or_else(|_| "{}".into())
-            );
-            Ok(())
-        }
         Some(Command::Tools) => {
+            init_tracing("info");
             let registry = ToolRegistry::new();
             for tool in registry.list_tools() {
                 println!("{}\t{}", tool.name, tool.description.unwrap_or_default());
             }
             Ok(())
         }
-        Some(Command::Init(args)) => init_config(&args),
+        Some(Command::Init(args)) => {
+            init_tracing("info");
+            init_config(&args)
+        }
+        Some(Command::Approvals(args)) => {
+            let config = Config::load(cli.config.as_deref())?;
+            init_tracing(&config.logging.level);
+            approvals_command(&config, args)
+        }
+        other => {
+            let mut config = Config::load(cli.config.as_deref())?;
+            match &other {
+                Some(Command::Serve(args)) => apply_serve_args(&mut config, args.clone()),
+                Some(Command::Doctor(args)) => {
+                    if let Some(bin) = args.engine_bin.clone() {
+                        config.engine.binary = bin;
+                    }
+                }
+                _ => {}
+            }
+            init_tracing(&config.logging.level);
+            match other {
+                None | Some(Command::Serve(_)) => serve(config).await,
+                Some(Command::Doctor(_)) => doctor(config).await,
+                Some(Command::PrintConfig) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&config.public_view())
+                            .unwrap_or_else(|_| "{}".into())
+                    );
+                    Ok(())
+                }
+                _ => unreachable!("handled above"),
+            }
+        }
     }
+}
+
+fn approvals_command(config: &Config, args: ApprovalsArgs) -> Result<()> {
+    use mcp_orca::safety::approval::ApprovalStore;
+
+    let dir = mcp_orca::workspace_expand::workspace_path(&config.workspace.root).join("approvals");
+    let store = ApprovalStore::new(dir, config.approval.ttl_secs)?;
+    match args.action {
+        ApprovalsAction::List => {
+            let pending = store.list_pending()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "count": pending.len(),
+                    "pending": pending,
+                }))
+                .unwrap_or_else(|_| "{}".into())
+            );
+        }
+        ApprovalsAction::Approve { approval_id, note } => {
+            let request = store.decide(&approval_id, true, note)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&request).unwrap_or_else(|_| "{}".into())
+            );
+        }
+        ApprovalsAction::Deny { approval_id, note } => {
+            let request = store.decide(&approval_id, false, note)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&request).unwrap_or_else(|_| "{}".into())
+            );
+        }
+    }
+    Ok(())
 }
 
 fn apply_serve_args(config: &mut Config, args: ServeArgs) {
@@ -254,10 +335,10 @@ fn init_config(args: &InitArgs) -> Result<()> {
     Ok(())
 }
 
-fn init_tracing() {
+fn init_tracing(default_level: &str) {
     let filter = std::env::var("MCP_ORCA_LOG_LEVEL")
         .or_else(|_| std::env::var("RUST_LOG"))
-        .unwrap_or_else(|_| "info".to_string());
+        .unwrap_or_else(|_| default_level.to_string());
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)

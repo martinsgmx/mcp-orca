@@ -31,6 +31,7 @@ cargo run -- --config mcp-orca.toml        # MCP server over stdio (default)
 cargo run -- --config mcp-orca.toml tools  # list tools
 cargo run -- --config mcp-orca.toml doctor # environment/diagnostics
 cargo run -- --config mcp-orca.toml print-config
+cargo run -- --config mcp-orca.toml approvals list
 ```
 
 Configuration precedence: built-in defaults < TOML file < `MCP_ORCA_*` environment variables < CLI flags.
@@ -40,6 +41,13 @@ Configuration precedence: built-in defaults < TOML file < `MCP_ORCA_*` environme
 Slicing stays disabled until `engine.slice_command` is set. The adapter stages models, `plan.json`, and `overrides.json` into the job directory, expands placeholders, runs the command, and imports the produced G-code as an artifact.
 
 Placeholders: `{binary}`, `{image}`, `{jobdir}`, `{gcode}`, `{models}` (one argv entry per model), `{model}` (first model), `{printer}`, `{filament}`, `{process}`, `{project}`, `{overrides}`, `{settings}`, `{plan_json}`.
+
+Extra slicer environment variables can be set with `engine.env`; values are placeholder-expanded too:
+
+```toml
+[engine]
+env = { ORCA_PROFILE_DIR = "{jobdir}/profiles", MCP_ORCA_JOB = "{jobdir}" }
+```
 
 Example host configuration (adjust flags to your OrcaSlicer build):
 
@@ -73,7 +81,8 @@ Every tool call goes through one registry choke point: policy evaluation, option
 
 - Policy (`[policy]`) allows a read-only mode and per-capability flags for workspace writes, slicing, export, and delete.
 - `orca_artifact_export`, `orca_artifact_delete`, and other gated actions do not execute on the first attempt. They create a pending approval request and return its id.
-- List requests with `orca_pending_approvals`, then approve or deny with `orca_approval_decide`. Retry the **identical** call within `approval.ttl_secs`; the approval is consumed exactly once.
+- List requests with `orca_pending_approvals`, then approve or deny with `orca_approval_decide` (`approval.mode = "in_band"` or `"both"`). Retry the **identical** call within `approval.ttl_secs`; the approval is consumed exactly once.
+- With `approval.mode = "out_of_band"`, MCP-side decisions are refused. Decide from the host instead: `mcp-orca approvals list`, `mcp-orca approvals approve <apr_id>`, `mcp-orca approvals deny <apr_id>`.
 - Audit records are appended as JSONL to `<workspace>/audit.jsonl` (tool, timestamp, outcome, short sanitized detail). Secrets are never written.
 
 ## Tools

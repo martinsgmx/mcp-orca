@@ -126,6 +126,8 @@ Because the concrete OrcaSlicer CLI is not yet wired (**[Placeholder]**), v1 def
 | `{printer}`, `{filament}`, `{process}`, `{project}` | selected essentials |
 | `{overrides}` | path to `<jobdir>/overrides.json` |
 | `{settings}` | path to `<jobdir>/settings.json` (merged workspace-profile + override settings) |
+
+`engine.env` adds environment variables to the slicer process (host or Docker); values are expanded with the same placeholders and passed verbatim to the child.
 | `{plan_json}` | path to `<jobdir>/plan.json` |
 
 The engine stages model files, `plan.json`, and `overrides.json`, clears any stale `output.gcode`, runs with timeout + cancellation, and fails clearly when the command exits non-zero, times out, or does not produce non-empty G-code. The G-code file is then imported as a content-addressed artifact linked to the job.
@@ -226,6 +228,7 @@ Artifacts provide stable ids for tool composition (import model → transform/me
 - **Redaction:** secrets/tokens and sensitive paths redacted from logs/audit/errors where appropriate.
 - **Audit:** implemented as an append-only JSONL log at `<workspace>/audit.jsonl` (unix timestamp, tool name, outcome, capped sanitized detail). Every registry call records at least one entry; approval-gated and denied calls are recorded before the handler runs.
 - **Implemented approval flow:** the first gated call persists a pending request (`approvals/<id>.json`) and returns an error carrying the request id; `orca_pending_approvals` lists unexpired requests; `orca_approval_decide` approves/denies; retrying the identical tool+args within `approval.ttl_secs` consumes the approval once.
+- **Approval modes:** `in_band` (default) and `both` accept MCP-side decisions. `out_of_band` refuses `orca_approval_decide`; decisions are made on the host with `mcp-orca approvals approve|deny <id>` against the same approval store.
 
 ## 12. Proposed v1 tool catalog (`orca_*`)
 

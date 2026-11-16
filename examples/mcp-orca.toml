@@ -22,11 +22,19 @@ max_concurrent_jobs = 2
 # `{models}` expands to one argument per staged model; `{model}` is the first.
 # slice_command = ["{binary}", "--slice", "{models}", "--output", "{gcode}"]
 # docker_command = ["docker", "run", "--rm", "-v", "{jobdir}:{jobdir}", "-w", "{jobdir}"]
+# Extra environment variables for the slicer process (placeholder-expanded).
+# env = { ORCA_PROFILE_DIR = "{jobdir}/profiles" }
 
 [profiles]
 # Bounded discovery: explicit paths + OS-detected common defaults.
 # search_paths = ["/path/to/profiles"]
 use_os_defaults = true
+
+[approval]
+# in_band (default) / out_of_band / both. out_of_band disables MCP-side
+# decisions; use `mcp-orca approvals approve|deny <id>` instead.
+mode = "in_band"
+ttl_secs = 120
 
 [policy]
 allow_workspace_writes = true
