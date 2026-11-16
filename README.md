@@ -2,7 +2,7 @@
 
 A safe, structured [Model Context Protocol](https://modelcontextprotocol.io) server for **OrcaSlicer** and FDM 3D printing G-code generation workflows.
 
-> **Status:** v1 implementation. Core services (workspace/artifacts, bounded profile discovery, mesh inspect/transform/merge, background slice jobs, policy/audit, CLI/doctor) are implemented and tested. Slicing execution is wired through a configurable engine argv template; the concrete OrcaSlicer CLI flags must be configured for your target version (`engine.slice_command`). See [`docs/DESIGN.md`](docs/DESIGN.md) and [`GLOSSARY.md`](GLOSSARY.md).
+> **Status:** v1 implementation. Core services (workspace/artifacts, bounded profile discovery, mesh inspect/transform/merge, background slice jobs, policy/audit, CLI/doctor) are implemented and tested. Slicing execution works through a configurable engine argv template and a built-in **OrcaSlicer CLI preset** (`engine.preset = "orca"`); a real OrcaSlicer binary/image is still environment-specific and must be available/configured. See [`docs/DESIGN.md`](docs/DESIGN.md) and [`GLOSSARY.md`](GLOSSARY.md).
 
 ## Goals (v1)
 
@@ -16,8 +16,8 @@ A safe, structured [Model Context Protocol](https://modelcontextprotocol.io) ser
 
 `mcp-orca` is a new standalone Rust project inspired by the structure and ergonomics of [`mcp-cura`](https://github.com/martinsgmx/mcp-cura) (used as a reference only, not a fork/copy): similar layering around tools, engine runners, profiles, slicing/jobs, workspace, and safety.
 
-- **Runners:** host CLI and Docker (configurable adapter contract; concrete OrcaSlicer CLI/image wired per environment).
-- **Essentials:** slicing requires resolved **printer + filament + process** presets (no invented defaults).
+- **Runners:** host CLI and Docker. Use the built-in `engine.preset = "orca"` for the documented OrcaSlicer headless CLI, or provide `engine.slice_command` for a custom/target-specific invocation (`slice_command` always overrides the preset).
+- **Essentials:** slicing requires resolved **printer + filament + process** presets (no invented defaults). The `orca` preset requires those selections to resolve to native OrcaSlicer `.json` preset files (paths, indexed presets, or a workspace profile's `base_profile`).
 - **Profile safety:** no whole-system scans; bounded/explicit paths; backups before any in-place profile modification; custom profiles stored in the workspace.
 
 ## Build and run
@@ -38,7 +38,30 @@ Configuration precedence: built-in defaults < TOML file < `MCP_ORCA_*` environme
 
 ## Engine configuration (slicing)
 
-Slicing stays disabled until `engine.slice_command` is set. The adapter stages models, `plan.json`, and `overrides.json` into the job directory, expands placeholders, runs the command, and imports the produced G-code as an artifact.
+Slicing stays disabled until an invocation is configured: set `engine.preset = "orca"` **or** provide `engine.slice_command`. The adapter stages inputs into the job directory, runs the slicer with timeout + cancellation, captures logs, and imports the produced G-code as an artifact.
+
+### Built-in OrcaSlicer preset (`engine.preset = "orca"`)
+
+Uses the documented OrcaSlicer headless CLI contract (researched from the upstream wiki):
+
+- Invocation shape: staged model(s) + `--load-settings "process.json;printer.json"` + `--load-filaments filament.json` + merged setting overrides + `--arrange 1 --slice 0 --outputdir {jobdir} --export-settings {jobdir}/orca_effective_settings.json`.
+- **Native presets required:** `printer`/`filament`/`process` selections must resolve to real `.json` preset files (direct path, indexed/discovered preset, or a workspace custom-profile artifact whose `base_profile` points at one). Workspace profile artifacts still contribute merged setting overrides.
+- **Setting overrides:** merged workspace/override settings are passed as `--key=value`. OrcaSlicer CLI flags use hyphens, so setting keys are converted underscore→hyphen (`layer_height` → `--layer-height`). Booleans become `1`/`0`, arrays are comma-joined. Preset-identity, print-host, and internal extruder-bookkeeping keys that Orca excludes from CLI overrides are omitted.
+- **Output:** Orca writes `plate_<N>.gcode` into `--outputdir`; the preset collects a single-plate result into the job's `output.gcode` artifact. Multi-plate output requires a custom `slice_command`.
+- **Docker:** preset JSONs are staged into the mounted job directory so the container can read them.
+
+```toml
+[engine]
+runner = "binary"
+preset = "orca"
+binary = "orca-slicer"
+# docker_image = "your-orcaslicer-image:tag"
+timeout_secs = 900
+```
+
+### Custom argv template (`engine.slice_command`)
+
+`slice_command` (and `docker_command`) are argv arrays expanded per job. An explicit `slice_command` overrides the preset.
 
 Placeholders: `{binary}`, `{image}`, `{jobdir}`, `{gcode}`, `{models}` (one argv entry per model), `{model}` (first model), `{printer}`, `{filament}`, `{process}`, `{project}`, `{overrides}`, `{settings}`, `{plan_json}`.
 
@@ -49,18 +72,19 @@ Extra slicer environment variables can be set with `engine.env`; values are plac
 env = { ORCA_PROFILE_DIR = "{jobdir}/profiles", MCP_ORCA_JOB = "{jobdir}" }
 ```
 
-Example host configuration (adjust flags to your OrcaSlicer build):
+Example custom host template:
 
 ```toml
 [engine]
 runner = "binary"
 binary = "orca-slicer"
 slice_command = [
-  "{binary}", "--slice", "{models}",
-  "--load", "{printer}", "--load", "{filament}", "--load", "{process}",
-  "--output", "{gcode}",
+  "{binary}", "{models}",
+  "--load-settings", "{process};{printer}",
+  "--load-filaments", "{filament}",
+  "--arrange", "1", "--slice", "0",
+  "--outputdir", "{jobdir}",
 ]
-timeout_secs = 900
 ```
 
 Example Docker configuration:
@@ -68,12 +92,12 @@ Example Docker configuration:
 ```toml
 [engine]
 runner = "docker"
+preset = "orca" # or provide slice_command
 docker_image = "your-orcaslicer-image:tag"
-docker_command = ["docker", "run", "--rm", "-v", "{jobdir}:{jobdir}", "-w", "{jobdir}"]
-slice_command = ["{image}", "--slice", "{models}", "--output", "{gcode}"]
+# docker_command = ["docker", "run", "--rm", "-v", "{jobdir}:{jobdir}", "-w", "{jobdir}"]
 ```
 
-For Docker, also bind-mount any profile directories referenced by `{printer}`/`{filament}`/`{process}` so the container can read them.
+For Docker, the job directory is mounted by default; bind-mount any additional directories needed by a custom `slice_command`. The built-in preset stages required preset files into the job directory.
 
 ## Safety, approvals, and audit
 

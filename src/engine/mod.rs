@@ -51,6 +51,7 @@ pub struct EngineInfo {
     pub version: Option<String>,
     pub detail: String,
     pub slice_command_configured: bool,
+    pub preset: Option<String>,
 }
 
 /// One model in a slice plan.
@@ -59,6 +60,22 @@ pub struct PlanModel {
     pub artifact_id: String,
     pub source_path: PathBuf,
     pub file_name: String,
+}
+
+/// Native preset files resolved for the built-in `OrcaSlicer` preset.
+///
+/// Workspace profile artifacts only carry setting maps; `OrcaSlicer` still needs
+/// real machine/process/filament preset JSON files, so the slicing tool resolves
+/// those (direct paths, indexed entries, or an artifact's `base_profile`) ahead
+/// of execution.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PresetPaths {
+    #[serde(default)]
+    pub printer: Option<String>,
+    #[serde(default)]
+    pub filament: Option<String>,
+    #[serde(default)]
+    pub process: Option<String>,
 }
 
 /// Everything needed to invoke the slicer for one job (adapter input).
@@ -74,6 +91,9 @@ pub struct SlicePlan {
     /// Merged settings (workspace custom profiles + overrides), when known.
     #[serde(default)]
     pub resolved_settings: Value,
+    /// Native preset files for the `OrcaSlicer` preset.
+    #[serde(default)]
+    pub preset_paths: PresetPaths,
     pub timeout: Duration,
 }
 
@@ -112,7 +132,7 @@ impl Engine {
         let resolved_path = which::which(&binary)
             .ok()
             .map(|p| p.to_string_lossy().to_string());
-        let slice_command_configured = !self.config.engine.slice_command.is_empty();
+        let slice_command_configured = self.config.engine.slice_invocation_configured();
         let mut info = EngineInfo {
             runner: EngineRunner::Binary,
             binary: binary.clone(),
@@ -122,6 +142,7 @@ impl Engine {
             version: None,
             detail: String::new(),
             slice_command_configured,
+            preset: self.config.engine.preset.clone(),
         };
         let Some(path) = resolved_path else {
             info.detail = format!(
@@ -133,7 +154,10 @@ impl Engine {
         info.detail = format!("found host binary at {path}");
         if !slice_command_configured {
             info.detail
-                .push_str("; engine.slice_command is empty (slicing not wired)");
+                .push_str("; set engine.preset='orca' or engine.slice_command (slicing not wired)");
+        } else if self.config.engine.slice_command.is_empty() {
+            info.detail
+                .push_str("; using built-in OrcaSlicer CLI preset");
         }
         for flag in ["--version", "-v", "version", "help", "--help"] {
             let mut cmd = Command::new(&binary);
@@ -169,7 +193,8 @@ impl Engine {
             available: false,
             version: None,
             detail: String::new(),
-            slice_command_configured: !self.config.engine.slice_command.is_empty(),
+            slice_command_configured: self.config.engine.slice_invocation_configured(),
+            preset: self.config.engine.preset.clone(),
         };
         if info.resolved_path.is_none() {
             info.detail = "docker not found on PATH".into();
@@ -183,7 +208,10 @@ impl Engine {
         info.detail = format!("docker available; image '{image}' configured");
         if !info.slice_command_configured {
             info.detail
-                .push_str("; engine.slice_command is empty (slicing not wired)");
+                .push_str("; set engine.preset='orca' or engine.slice_command (slicing not wired)");
+        } else if self.config.engine.slice_command.is_empty() {
+            info.detail
+                .push_str("; using built-in OrcaSlicer CLI preset (preset files are staged into the mounted job directory)");
         }
         info
     }
@@ -207,9 +235,10 @@ impl Engine {
             }
         }
 
-        if self.config.engine.slice_command.is_empty() {
+        let use_preset = self.config.engine.slice_command.is_empty();
+        if use_preset && !self.config.engine.orca_preset() {
             return Err(Error::Engine(format!(
-                "engine.slice_command is not configured for runner={:?} (binary='{}', docker_image={:?}). Wire the OrcaSlicer CLI argv template per docs/DESIGN.md.",
+                "no slice invocation configured for runner={:?} (binary='{}', docker_image={:?}). Set engine.preset='orca' or wire the OrcaSlicer CLI argv template with engine.slice_command per docs/DESIGN.md.",
                 self.config.engine.runner, self.config.engine.binary, self.config.engine.docker_image
             )));
         }
@@ -253,15 +282,27 @@ impl Engine {
         let output_path = job_dir.join("output.gcode");
         let _ = std::fs::remove_file(&output_path);
 
-        let argv = self.build_argv(
-            plan,
-            job_dir,
-            &staged_models,
-            &overrides_path,
-            &settings_path,
-            &plan_path,
-            &output_path,
-        )?;
+        let argv = if use_preset {
+            self.build_orca_argv(
+                plan,
+                job_dir,
+                &staged_models,
+                &overrides_path,
+                &settings_path,
+                &plan_path,
+                &output_path,
+            )?
+        } else {
+            self.build_argv(
+                plan,
+                job_dir,
+                &staged_models,
+                &overrides_path,
+                &settings_path,
+                &plan_path,
+                &output_path,
+            )?
+        };
         let env = self.expand_env(
             plan,
             &job_dir.to_string_lossy(),
@@ -300,6 +341,10 @@ impl Engine {
                 output.status.code(),
                 truncate(detail, 2000)
             )));
+        }
+
+        if use_preset {
+            Self::collect_orca_gcode(job_dir, &output_path)?;
         }
 
         let meta = std::fs::metadata(&output_path).map_err(|_| {
@@ -445,6 +490,302 @@ impl Engine {
         ));
         Ok(argv)
     }
+
+    /// Build the documented `OrcaSlicer` CLI invocation.
+    ///
+    /// Preset JSON files are staged into the job directory first so host and
+    /// Docker runs use identical, mounted paths. Merged workspace/override
+    /// settings are passed as `--key=value` (underscores become hyphens).
+    #[allow(clippy::too_many_arguments)]
+    fn build_orca_argv(
+        &self,
+        plan: &SlicePlan,
+        job_dir: &Path,
+        models: &[PathBuf],
+        overrides_path: &Path,
+        settings_path: &Path,
+        plan_path: &Path,
+        output_path: &Path,
+    ) -> Result<Vec<String>> {
+        let job = job_dir.to_string_lossy().to_string();
+        let gcode = output_path.to_string_lossy().to_string();
+        let mut argv: Vec<String> = Vec::new();
+        let mut image = String::new();
+
+        match self.config.engine.runner {
+            EngineRunner::Binary => argv.push(self.config.engine.binary.clone()),
+            EngineRunner::Docker => {
+                let image_ref = self.config.engine.docker_image.as_deref().ok_or_else(|| {
+                    Error::Engine("engine.docker_image is required for the docker runner".into())
+                })?;
+                image = image_ref.to_string();
+                let prefix_has_image = self
+                    .config
+                    .engine
+                    .docker_command
+                    .iter()
+                    .any(|arg| arg.contains("{image}"));
+                let prefix = if self.config.engine.docker_command.is_empty() {
+                    vec![
+                        "docker".to_string(),
+                        "run".to_string(),
+                        "--rm".to_string(),
+                        "-v".to_string(),
+                        format!("{job}:{job}"),
+                        "-w".to_string(),
+                        job.clone(),
+                    ]
+                } else {
+                    expand_template(
+                        &self.config.engine.docker_command,
+                        plan,
+                        &job,
+                        &gcode,
+                        models,
+                        overrides_path,
+                        settings_path,
+                        plan_path,
+                        "",
+                        &image,
+                    )
+                };
+                argv.extend(prefix);
+                if !prefix_has_image {
+                    argv.push(image.clone());
+                }
+            }
+        }
+
+        let staged = stage_orca_presets(plan, job_dir)?;
+        let mut slice: Vec<String> = vec!["{models}".into()];
+
+        let mut settings_files = Vec::new();
+        if let Some(process) = &staged.process {
+            settings_files.push(process);
+        }
+        if let Some(printer) = &staged.printer {
+            settings_files.push(printer);
+        }
+        if !settings_files.is_empty() {
+            slice.push("--load-settings".into());
+            slice.push(
+                settings_files
+                    .iter()
+                    .map(|path| path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(";"),
+            );
+        }
+        if let Some(filament) = &staged.filament {
+            slice.push("--load-filaments".into());
+            slice.push(filament.clone());
+        }
+
+        slice.extend(orca_override_flags(&plan.resolved_settings));
+        slice.extend([
+            "--arrange".into(),
+            "1".into(),
+            "--slice".into(),
+            "0".into(),
+            "--outputdir".into(),
+            "{jobdir}".into(),
+            "--export-settings".into(),
+            job_dir
+                .join("orca_effective_settings.json")
+                .to_string_lossy()
+                .to_string(),
+        ]);
+
+        argv.extend(expand_template(
+            &slice,
+            plan,
+            &job,
+            &gcode,
+            models,
+            overrides_path,
+            settings_path,
+            plan_path,
+            &self.config.engine.binary,
+            &image,
+        ));
+        Ok(argv)
+    }
+
+    /// `OrcaSlicer` writes `plate_<N>.gcode` into `--outputdir`; the rest of the
+    /// server consumes a single `output.gcode`.
+    fn collect_orca_gcode(job_dir: &Path, output_path: &Path) -> Result<()> {
+        let mut candidates: Vec<PathBuf> = std::fs::read_dir(job_dir)?
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| {
+                            name != "output.gcode"
+                                && std::path::Path::new(name)
+                                    .extension()
+                                    .is_some_and(|ext| ext.eq_ignore_ascii_case("gcode"))
+                        })
+            })
+            .collect();
+        candidates.sort();
+
+        match candidates.len() {
+            0 => Err(Error::Engine(format!(
+                "OrcaSlicer reported success but wrote no G-code in {} (expected plate_N.gcode from --outputdir)",
+                job_dir.display()
+            ))),
+            1 => {
+                let produced = &candidates[0];
+                if produced != output_path {
+                    std::fs::rename(produced, output_path).or_else(|_| {
+                        std::fs::copy(produced, output_path).map(|copied| {
+                            if copied > 0 {
+                                let _ = std::fs::remove_file(produced);
+                            }
+                        })
+                    })?;
+                }
+                Ok(())
+            }
+            count => {
+                let names = candidates
+                    .iter()
+                    .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(Error::Engine(format!(
+                    "OrcaSlicer produced {count} plate G-code files ({names}); the built-in orca preset expects one plate per job. Arrange the models onto a single plate, or set engine.slice_command for per-plate handling."
+                )))
+            }
+        }
+    }
+}
+
+/// Copy resolved Orca preset JSONs into the job directory.
+fn stage_orca_presets(plan: &SlicePlan, job_dir: &Path) -> Result<PresetPaths> {
+    let mut staged = PresetPaths::default();
+    for (role, value) in [
+        ("printer", &plan.preset_paths.printer),
+        ("filament", &plan.preset_paths.filament),
+        ("process", &plan.preset_paths.process),
+    ] {
+        let Some(source) = value else { continue };
+        let dest = job_dir.join(format!("preset_{role}.json"));
+        std::fs::copy(source, &dest).map_err(|err| {
+            Error::Engine(format!(
+                "could not stage OrcaSlicer {role} preset '{source}' into the job dir: {err}"
+            ))
+        })?;
+        let staged_path = Some(dest.to_string_lossy().to_string());
+        match role {
+            "printer" => staged.printer = staged_path,
+            "filament" => staged.filament = staged_path,
+            "process" => staged.process = staged_path,
+            _ => unreachable!("fixed preset roles"),
+        }
+    }
+    Ok(staged)
+}
+
+/// Keys that `OrcaSlicer` deliberately does not expose as `--key=value` CLI
+/// overrides (preset identity/inheritance, print-host credentials, internal
+/// extruder bookkeeping). Sourced from the upstream CLI wiki.
+const ORCA_CLI_EXCLUDED_KEYS: &[&str] = &[
+    "preset_name",
+    "compatible_printers",
+    "compatible_printers_condition",
+    "compatible_prints",
+    "compatible_prints_condition",
+    "compatible_machine_expression_group",
+    "compatible_process_expression_group",
+    "different_settings_to_system",
+    "print_compatible_printers",
+    "default_filament_profile",
+    "default_print_profile",
+    "filament_ids",
+    "filament_vendor",
+    "inherits",
+    "inherits_group",
+    "host_type",
+    "printer_model",
+    "printer_variant",
+    "material_vendor",
+    "default_sla_material_profile",
+    "sla_material_settings_id",
+    "default_sla_print_profile",
+    "sla_print_settings_id",
+    "bbl_use_printhost",
+    "use_3mf",
+    "printer_agent",
+    "print_host",
+    "print_host_webui",
+    "printhost_apikey",
+    "flashforge_serial_number",
+    "printhost_port",
+    "printhost_cafile",
+    "printhost_user",
+    "printhost_password",
+    "printhost_ssl_ignore_revoke",
+    "printhost_authorization_type",
+    "extruder_variant_list",
+    "printer_extruder_id",
+    "printer_extruder_variant",
+    "print_extruder_id",
+    "print_extruder_variant",
+    "filament_extruder_variant",
+    "filament_self_index",
+];
+
+fn is_orca_cli_excluded(key: &str) -> bool {
+    ORCA_CLI_EXCLUDED_KEYS.contains(&key)
+}
+
+/// Render merged settings as `OrcaSlicer` `--key=value` flags.
+fn orca_override_flags(settings: &Value) -> Vec<String> {
+    let Some(map) = settings.as_object() else {
+        return Vec::new();
+    };
+    let mut flags = Vec::new();
+    for (key, value) in map {
+        if key.starts_with('_') || is_orca_cli_excluded(key) {
+            continue;
+        }
+        if let Some(rendered) = render_orca_value(value) {
+            flags.push(format!("--{}={rendered}", key.replace('_', "-")));
+        } else {
+            tracing::warn!(
+                target: "mcp_orca::engine",
+                key,
+                "skipping OrcaSlicer setting override that is not a scalar or scalar list"
+            );
+        }
+    }
+    flags
+}
+
+fn render_orca_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Array(items) => {
+            let mut parts = Vec::with_capacity(items.len());
+            for item in items {
+                parts.push(render_orca_scalar(item)?);
+            }
+            Some(parts.join(","))
+        }
+        other => render_orca_scalar(other),
+    }
+}
+
+fn render_orca_scalar(value: &Value) -> Option<String> {
+    match value {
+        Value::Bool(value) => Some(if *value { "1" } else { "0" }.to_string()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::String(value) => Some(value.clone()),
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -576,6 +917,7 @@ mod tests {
             profiles: vec![],
             overrides: serde_json::json!({"sparse_infill_density": 15}),
             resolved_settings: serde_json::json!({"sparse_infill_density": 15}),
+            preset_paths: PresetPaths::default(),
             timeout: Duration::from_secs(10),
         };
         let job_dir = td.path().join("job");

@@ -104,15 +104,25 @@ scripts/
 
 Provide: `print-config` (resolved, secret-free), `init` (starter config), and `doctor` diagnostics.
 
-## 5. Engine runners and slice contract (generic/adapter)
+## 5. Engine runners and slice contract
 
-Because the concrete OrcaSlicer CLI is not yet wired (**[Placeholder]**), v1 defines a **configurable adapter contract** that both runners implement.
+v1 provides two ways to invoke OrcaSlicer: a **built-in preset** for the documented headless CLI (`engine.preset = "orca"`) and a **generic argv-template adapter** (`engine.slice_command`). An explicit `slice_command` always overrides the preset. A real OrcaSlicer binary/image remains environment-specific and is not bundled.
 
 ### 5.1 Runners
-- **Host (`binary`)**: execute `engine.slice_command` on the host. Resolve `{binary}` via absolute path or PATH. Capture stdout/stderr/logs to the job workspace.
-- **Docker (`docker`)**: run `engine.docker_command` (default: `docker run --rm -v {jobdir}:{jobdir} -w {jobdir}`) with `engine.docker_image` and `engine.slice_command`. No implicit mounts beyond the job directory; additional host/profile mounts must be added explicitly to `docker_command`.
+- **Host (`binary`)**: execute the resolved host command. Resolve `{binary}` via absolute path or PATH. Capture stdout/stderr/logs to the job workspace.
+- **Docker (`docker`)**: run `engine.docker_command` (default: `docker run --rm -v {jobdir}:{jobdir} -w {jobdir}`) with `engine.docker_image`. No implicit mounts beyond the job directory; additional mounts must be added explicitly to `docker_command` when a custom invocation references external paths. The built-in preset stages required preset files into the mounted job directory.
 
-### 5.1.1 Implemented argv template
+### 5.2 Built-in OrcaSlicer preset (`engine.preset = "orca"`)
+
+Researched from the upstream OrcaSlicer wiki (`cli_mode`, `cli_actions`, `cli_misc`, `cli_transform`) and implemented as an opt-in preset:
+
+- **Invocation:** staged model(s) as positional inputs, then `--load-settings "process.json;printer.json"` and `--load-filaments filament.json` (semicolon-separated; printer+process share one `--load-settings` value), merged setting overrides as `--key=value`, `--arrange 1`, `--slice 0` (all plates), `--outputdir {jobdir}`, and `--export-settings {jobdir}/orca_effective_settings.json`.
+- **Preset files:** OrcaSlicer requires native machine/process/filament JSON presets. Selections must resolve to `.json` files (direct path, discovered/indexed preset entry, or a workspace custom-profile artifact's `base_profile`). Workspace profile artifacts still contribute merged setting overrides.
+- **Setting overrides / key mapping:** CLI flags use hyphens; setting keys are converted underscore→hyphen (e.g. `layer_height` → `--layer-height`). Booleans are rendered as `1`/`0`; vector/scalar-array values are comma-joined. Preset-identity/inheritance, print-host credential, and internal extruder-bookkeeping keys excluded by Orca's CLI contract are omitted from `--key=value` overrides.
+- **Output handling:** Orca writes `plate_<N>.gcode` into `--outputdir`. The preset collects a single-plate result into the job's `output.gcode` artifact and fails clearly on zero or multi-plate output (multi-plate/custom naming requires `engine.slice_command`).
+- **Staging:** models and resolved preset JSONs are copied into the job directory so host and Docker runs use mounted/invocation-local paths.
+
+### 5.3 Custom argv template (`engine.slice_command`)
 `engine.slice_command` (and `engine.docker_command`) are argv arrays expanded per job with these placeholders:
 
 | Placeholder | Value |
@@ -126,13 +136,13 @@ Because the concrete OrcaSlicer CLI is not yet wired (**[Placeholder]**), v1 def
 | `{printer}`, `{filament}`, `{process}`, `{project}` | selected essentials |
 | `{overrides}` | path to `<jobdir>/overrides.json` |
 | `{settings}` | path to `<jobdir>/settings.json` (merged workspace-profile + override settings) |
-
-`engine.env` adds environment variables to the slicer process (host or Docker); values are expanded with the same placeholders and passed verbatim to the child.
 | `{plan_json}` | path to `<jobdir>/plan.json` |
 
-The engine stages model files, `plan.json`, and `overrides.json`, clears any stale `output.gcode`, runs with timeout + cancellation, and fails clearly when the command exits non-zero, times out, or does not produce non-empty G-code. The G-code file is then imported as a content-addressed artifact linked to the job.
+`engine.env` adds environment variables to the slicer process (host or Docker); values are expanded with the same placeholders and passed verbatim to the child.
 
-### 5.2 Common slice contract (conceptual)
+The template engine stages model files, `plan.json`, `overrides.json`, and `settings.json`, clears any stale `output.gcode`, runs with timeout + cancellation, and fails clearly when the command exits non-zero, times out, or does not produce non-empty G-code. The G-code file is then imported as a content-addressed artifact linked to the job.
+
+### 5.4 Common slice contract (conceptual)
 A slice invocation must be expressible as:
 - **Inputs:** one or more model artifact/file paths (ordered).
 - **Output:** target G-code path within the job/workspace (imported as an artifact on success).
@@ -140,7 +150,7 @@ A slice invocation must be expressible as:
 - **Overrides:** a map of setting overrides (typed/known keys + pass-through keys) applied according to the adapter’s mechanism.
 - **Execution controls:** timeout, cancellation token, optional thread/resource hints, environment.
 
-**[Placeholder / to wire when CLI known]:** exact flag names, how presets are loaded/selected, whether overrides are passed via CLI flags, generated config/profile files, or 3MF/project inputs, and how output paths/logs are specified. These target-specific details belong in `engine.slice_command`; host and Docker share the same staging/orchestration logic.
+**Environment-specific:** real OrcaSlicer binary/image availability, exact preset naming/contents, multi-plate workflows, and version-specific CLI behavior remain deployment concerns; `slice_command` and Docker mounts provide the escape hatch.
 
 ### 5.3 Reliability & degradation
 - `doctor` reports runner availability/config validity and profile source health without requiring a successful slice.

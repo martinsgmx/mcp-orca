@@ -154,6 +154,14 @@ pub struct EngineConfig {
     pub binary: String,
     pub docker_image: Option<String>,
     pub docker_command: Vec<String>,
+    /// Built-in invocation preset. Currently only `"orca"` (aliases
+    /// `"orcaslicer"` / `"orca-slicer"`) is recognized. When set and
+    /// `slice_command` is empty, the adapter uses the documented `OrcaSlicer` CLI
+    /// contract (`--load-settings`, `--load-filaments`, `--slice 0`,
+    /// `--outputdir`, `--key=value` overrides) and discovers `plate_N.gcode`.
+    /// An explicit `slice_command` always wins over the preset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
     /// Argv template for the slicer invocation. Supports placeholders documented in
     /// `engine` module docs (e.g. `{binary}`, `{gcode}`, `{models}`, `{printer}`).
     pub slice_command: Vec<String>,
@@ -171,11 +179,32 @@ impl Default for EngineConfig {
             binary: "orca-slicer".to_string(),
             docker_image: None,
             docker_command: Vec::new(),
+            preset: None,
             slice_command: Vec::new(),
             env: std::collections::BTreeMap::new(),
             timeout_secs: 900,
             max_concurrent_jobs: 2,
         }
+    }
+}
+
+impl EngineConfig {
+    /// Whether the configured preset is the built-in `OrcaSlicer` contract.
+    #[must_use]
+    pub fn orca_preset(&self) -> bool {
+        self.preset.as_deref().is_some_and(|preset| {
+            matches!(
+                preset.trim().to_ascii_lowercase().as_str(),
+                "orca" | "orcaslicer" | "orca-slicer"
+            )
+        })
+    }
+
+    /// Whether a slice invocation can be built: an explicit argv template or a
+    /// recognized preset.
+    #[must_use]
+    pub fn slice_invocation_configured(&self) -> bool {
+        !self.slice_command.is_empty() || self.orca_preset()
     }
 }
 
@@ -330,6 +359,13 @@ impl Config {
                 "engine.max_concurrent_jobs must be > 0".into(),
             ));
         }
+        if let Some(preset) = &self.engine.preset {
+            if !self.engine.orca_preset() {
+                return Err(Error::Config(format!(
+                    "unknown engine.preset '{preset}' (expected 'orca')"
+                )));
+            }
+        }
 
         if self.server.transport == TransportKind::Http {
             let host: IpAddr =
@@ -391,6 +427,19 @@ mod tests {
         assert!(cfg.validate().is_ok());
         assert_eq!(cfg.engine.binary, "orca-slicer");
         assert!(cfg.profiles.use_os_defaults);
+    }
+
+    #[test]
+    fn preset_validation_and_slice_invocation() {
+        let mut cfg = Config::default();
+        assert!(!cfg.engine.slice_invocation_configured());
+        cfg.engine.preset = Some("orca".into());
+        assert!(cfg.validate().is_ok());
+        assert!(cfg.engine.orca_preset());
+        assert!(cfg.engine.slice_invocation_configured());
+
+        cfg.engine.preset = Some("bogus".into());
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

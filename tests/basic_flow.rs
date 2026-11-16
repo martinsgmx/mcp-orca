@@ -1013,3 +1013,148 @@ async fn artifact_export_requires_approval_and_writes_under_export_roots() {
         .await;
     assert!(refused.is_err());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn orca_preset_builds_documented_cli_and_collects_plate_gcode() {
+    let td = tempdir().unwrap();
+    let script = td.path().join("fake-orca.sh");
+    write_script(
+        &script,
+        r#"#!/bin/sh
+set -eu
+outdir=""
+i=1
+while [ $i -le $# ]; do
+  eval "arg=\${$i}"
+  if [ "$arg" = "--outputdir" ]; then
+    i=$((i + 1))
+    eval "outdir=\${$i}"
+  fi
+  i=$((i + 1))
+done
+[ -n "$outdir" ]
+printf '%s\n' "$@" > "$outdir/argv.txt"
+printf '; orca preset fake\nG28\n' > "$outdir/plate_1.gcode"
+"#,
+    );
+
+    let printer = td.path().join("printer.json");
+    let filament = td.path().join("filament.json");
+    let process = td.path().join("process.json");
+    std::fs::write(&printer, "{\n  \"name\": \"TestPrinter\"\n}\n").unwrap();
+    std::fs::write(&filament, "{\n  \"name\": \"TestPLA\"\n}\n").unwrap();
+    std::fs::write(&process, "{\n  \"name\": \"TestProcess\"\n}\n").unwrap();
+
+    let mut cfg = Config::default();
+    cfg.workspace.root = td.path().join("ws").to_string_lossy().to_string();
+    cfg.profiles.use_os_defaults = false;
+    cfg.profiles.search_paths = vec![];
+    cfg.engine.preset = Some("orca".into());
+    cfg.engine.binary = script.to_string_lossy().to_string();
+
+    let ctx = Arc::new(ToolContext::new(cfg).unwrap());
+    let registry = ToolRegistry::new();
+    let art_id = import_test_cube(&registry, &ctx).await;
+
+    let slice = registry
+        .call(
+            &ctx,
+            "orca_slice",
+            Some(json!({
+                "model_artifact_ids": [art_id],
+                "printer": printer.to_string_lossy(),
+                "filament": filament.to_string_lossy(),
+                "process": process.to_string_lossy(),
+                "overrides": {"sparse_infill_density": 20, "enable_support": true},
+                "wait": true,
+                "wait_timeout_secs": 30
+            })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(slice.is_error, Some(false), "slice: {slice:?}");
+    let body = slice.structured_content.as_ref().unwrap();
+    assert_eq!(body["state"], "completed", "body: {body:?}");
+    let gcode_id = body["gcode_artifact"].as_str().unwrap().to_string();
+
+    let gcode = registry
+        .call(
+            &ctx,
+            "orca_artifact_read_text",
+            Some(json!({"artifact_id": gcode_id})),
+        )
+        .await
+        .unwrap();
+    let text = gcode.structured_content.as_ref().unwrap()["text"]
+        .as_str()
+        .unwrap();
+    assert!(text.contains("orca preset fake"), "gcode: {text}");
+
+    let job_id = body["id"].as_str().unwrap();
+    let job_dir = ctx.store.job_dir(job_id);
+    let argv_text = std::fs::read_to_string(job_dir.join("argv.txt")).unwrap();
+    let args: Vec<&str> = argv_text.lines().collect();
+
+    assert!(args
+        .iter()
+        .any(|a| a.to_ascii_lowercase().ends_with(".stl")));
+    assert!(args.contains(&"--load-settings"));
+    let ls_idx = args.iter().position(|a| *a == "--load-settings").unwrap();
+    let ls_val = args[ls_idx + 1];
+    assert!(ls_val.contains("preset_process.json") && ls_val.contains("preset_printer.json"));
+    assert!(args.contains(&"--load-filaments"));
+    assert!(args.contains(&"--arrange"));
+    assert!(args.contains(&"1"));
+    assert!(args.contains(&"--slice"));
+    assert!(args.contains(&"0"));
+    assert!(args.contains(&"--outputdir"));
+    assert!(args.contains(&"--export-settings"));
+    assert!(args
+        .iter()
+        .any(|a| a.ends_with("orca_effective_settings.json")));
+    assert!(args.contains(&"--sparse-infill-density=20"));
+    assert!(args.contains(&"--enable-support=1"));
+    assert!(job_dir.join("preset_printer.json").exists());
+    assert!(job_dir.join("preset_filament.json").exists());
+    assert!(job_dir.join("preset_process.json").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn orca_preset_requires_native_preset_files() {
+    let td = tempdir().unwrap();
+    let script = td.path().join("fake-orca.sh");
+    write_script(&script, "#!/bin/sh\nexit 1\n");
+
+    let mut cfg = Config::default();
+    cfg.workspace.root = td.path().join("ws").to_string_lossy().to_string();
+    cfg.profiles.use_os_defaults = false;
+    cfg.profiles.search_paths = vec![];
+    cfg.engine.preset = Some("orca".into());
+    cfg.engine.binary = script.to_string_lossy().to_string();
+
+    let ctx = Arc::new(ToolContext::new(cfg).unwrap());
+    let registry = ToolRegistry::new();
+    let art_id = import_test_cube(&registry, &ctx).await;
+
+    let slice = registry
+        .call(
+            &ctx,
+            "orca_slice",
+            Some(json!({
+                "model_artifact_ids": [art_id],
+                "printer": "nonexistent_printer",
+                "filament": "nonexistent_filament",
+                "process": "nonexistent_process",
+                "wait": true,
+                "wait_timeout_secs": 10
+            })),
+        )
+        .await;
+    let err = slice.unwrap_err().public_message();
+    assert!(
+        err.contains("native OrcaSlicer JSON preset"),
+        "error: {err}"
+    );
+}

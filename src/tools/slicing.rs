@@ -3,7 +3,7 @@
 use serde_json::{json, Value};
 
 use crate::{
-    engine::{PlanModel, SlicePlan},
+    engine::{PlanModel, PresetPaths, SlicePlan},
     error::Error,
     safety::{Capability, Risk},
     slicing::SliceJobRequest,
@@ -187,9 +187,14 @@ fn slice(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
         }
 
         let essentials = json!({"printer": printer, "filament": filament, "process": process, "project": project});
+        let preset_paths = resolve_preset_paths(
+            ctx,
+            [printer.as_deref(), filament.as_deref(), process.as_deref()],
+        )?;
         let resolved_settings = merge_effective_settings(
             ctx,
             [printer.as_deref(), filament.as_deref(), process.as_deref()],
+            &profiles,
             &overrides,
         );
         let plan = SlicePlan {
@@ -201,6 +206,7 @@ fn slice(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
             profiles: profiles.clone(),
             overrides: overrides.clone(),
             resolved_settings: resolved_settings.clone(),
+            preset_paths: preset_paths.clone(),
             timeout: std::time::Duration::from_secs(ctx.config.engine.timeout_secs),
         };
         let request = SliceJobRequest {
@@ -212,6 +218,7 @@ fn slice(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
                 "profiles": profiles,
                 "overrides": overrides,
                 "resolved_settings": resolved_settings,
+                "preset_paths": preset_paths,
             }),
             request: json!({
                 "name": name,
@@ -295,10 +302,15 @@ fn list(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
 fn merge_effective_settings(
     ctx: &ToolContext,
     selections: [Option<&str>; 3],
+    extra_profiles: &[String],
     overrides: &Value,
 ) -> Value {
     let mut merged = serde_json::Map::new();
-    for value in selections.into_iter().flatten() {
+    let layers = selections
+        .into_iter()
+        .flatten()
+        .chain(extra_profiles.iter().map(String::as_str));
+    for value in layers {
         if !value.starts_with("art_") {
             continue;
         }
@@ -327,6 +339,85 @@ fn merge_effective_settings(
     } else {
         Value::Object(merged)
     }
+}
+
+/// Resolve native preset files for the built-in `OrcaSlicer` preset.
+///
+/// `OrcaSlicer` needs real machine/process/filament JSON presets; setting maps
+/// alone are not enough to start a headless slice. Selections may be direct
+/// paths, indexed profile ids/names, or workspace artifacts carrying a
+/// `base_profile`. Anything unresolved is a hard error so we never slice with
+/// silently wrong settings.
+fn resolve_preset_paths(
+    ctx: &ToolContext,
+    selections: [Option<&str>; 3],
+) -> Result<PresetPaths, Error> {
+    if !ctx.config.engine.orca_preset() || !ctx.config.engine.slice_command.is_empty() {
+        return Ok(PresetPaths::default());
+    }
+
+    let catalog = ctx.profiles.catalog()?;
+    let [printer, filament, process] = selections;
+    Ok(PresetPaths {
+        printer: resolve_one_preset(ctx, &catalog, "printer", printer)?,
+        filament: resolve_one_preset(ctx, &catalog, "filament", filament)?,
+        process: resolve_one_preset(ctx, &catalog, "process", process)?,
+    })
+}
+
+fn resolve_one_preset(
+    ctx: &ToolContext,
+    catalog: &crate::profiles::ProfileCatalog,
+    role: &str,
+    selection: Option<&str>,
+) -> Result<Option<String>, Error> {
+    let Some(value) = selection else {
+        return Ok(None);
+    };
+    if let Some(path) = native_preset_path(catalog, value) {
+        return Ok(Some(path));
+    }
+    if value.starts_with("art_") {
+        if let Some(base) = ctx
+            .store
+            .read_bytes(value)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|payload| {
+                payload
+                    .get("base_profile")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        {
+            if let Some(path) = native_preset_path(catalog, &base) {
+                return Ok(Some(path));
+            }
+            return Err(Error::InvalidArguments(format!(
+                "engine.preset='orca': workspace {role} profile '{value}' points at base_profile '{base}', which is not an existing .json preset. Fix base_profile, add its directory to profiles.search_paths, or pass the native preset path directly."
+            )));
+        }
+    }
+    Err(Error::InvalidArguments(format!(
+        "engine.preset='orca' requires a native OrcaSlicer JSON preset for {role}; selection '{value}' did not resolve to a .json file. Pass a preset path, add its directory to profiles.search_paths, or set base_profile on the workspace profile artifact. Workspace artifacts alone only contribute setting overrides."
+    )))
+}
+
+fn native_preset_path(catalog: &crate::profiles::ProfileCatalog, value: &str) -> Option<String> {
+    let expanded = crate::workspace::expand_tilde(value);
+    let path = std::path::Path::new(&expanded);
+    if path.is_file() {
+        return is_json(path).then(|| path.to_string_lossy().to_string());
+    }
+    let entry = catalog.get(value)?;
+    let path = std::path::Path::new(&entry.path);
+    is_json(path).then(|| entry.path.clone())
+}
+
+fn is_json(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
 }
 
 fn job_json(record: &crate::slicing::JobRecord) -> Value {

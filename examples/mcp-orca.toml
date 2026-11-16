@@ -8,19 +8,34 @@ transport = "stdio"
 root = "~/.local/share/mcp-orca"
 
 [engine]
-# Generic adapter: wire your OrcaSlicer CLI (host) or Docker image here.
-# Slicing is disabled while slice_command is empty.
+# Slicing is disabled until an invocation is configured:
+# - preset = "orca" uses the built-in OrcaSlicer headless CLI contract, OR
+# - provide slice_command for a custom argv template (overrides preset).
 runner = "binary"
+preset = "orca"
 binary = "orca-slicer"
 # docker_image = "your-orcaslicer-image:tag"
 timeout_secs = 900
 max_concurrent_jobs = 2
 
-# Argv template. Placeholders:
+# Built-in preset (orca): stages model(s) + native printer/filament/process .json
+# presets, passes --load-settings "process.json;printer.json",
+# --load-filaments, merged --key=value overrides (underscore->hyphen), --arrange 1,
+# --slice 0, --outputdir {jobdir}. Orca writes plate_N.gcode; single-plate output
+# is collected into output.gcode. Preset selections must resolve to native preset
+# files (path/indexed/base_profile).
+
+# Custom argv template (overrides preset). Placeholders:
 #   {binary} {image} {jobdir} {gcode} {models} {model}
 #   {printer} {filament} {process} {project} {overrides} {settings} {plan_json}
 # `{models}` expands to one argument per staged model; `{model}` is the first.
-# slice_command = ["{binary}", "--slice", "{models}", "--output", "{gcode}"]
+# slice_command = [
+#   "{binary}", "{models}",
+#   "--load-settings", "{process};{printer}",
+#   "--load-filaments", "{filament}",
+#   "--arrange", "1", "--slice", "0",
+#   "--outputdir", "{jobdir}",
+# ]
 # docker_command = ["docker", "run", "--rm", "-v", "{jobdir}:{jobdir}", "-w", "{jobdir}"]
 # Extra environment variables for the slicer process (placeholder-expanded).
 # env = { ORCA_PROFILE_DIR = "{jobdir}/profiles" }

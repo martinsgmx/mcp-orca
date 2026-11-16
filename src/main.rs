@@ -34,15 +34,24 @@ keep_jobs = 100
 [engine]
 # runner: "binary" (host CLI) or "docker"
 runner = "binary"
-# Configure the OrcaSlicer CLI/image for your target. Slicing stays disabled
-# while slice_command is empty.
+# Built-in OrcaSlicer CLI preset (documented: --load-settings/--load-filaments/
+# --key=value overrides/--arrange 1/--slice 0/--outputdir). Set to "orca" or
+# remove it and provide slice_command for a custom invocation.
+preset = "orca"
 binary = "orca-slicer"
 # docker_image = "ghcr.io/example/orcaslicer:latest"
 timeout_secs = 900
 max_concurrent_jobs = 2
-# Argv template. Placeholders: {binary} {image} {jobdir} {gcode} {models}
-# {model} {printer} {filament} {process} {project} {overrides} {settings} {plan_json}
-# slice_command = ["{binary}", "--slice", "{models}", "--output", "{gcode}"]
+# Custom argv template (overrides preset). Placeholders: {binary} {image}
+# {jobdir} {gcode} {models} {model} {printer} {filament} {process} {project}
+# {overrides} {settings} {plan_json}
+# slice_command = [
+#   "{binary}", "{models}",
+#   "--load-settings", "{process};{printer}",
+#   "--load-filaments", "{filament}",
+#   "--arrange", "1", "--slice", "0",
+#   "--outputdir", "{jobdir}",
+# ]
 # docker_command = ["docker", "run", "--rm", "-v", "{jobdir}:{jobdir}", "-w", "{jobdir}"]
 # Extra environment variables for the slicer process (placeholder-expanded).
 # env = { ORCA_PROFILE_DIR = "{jobdir}/profiles" }
