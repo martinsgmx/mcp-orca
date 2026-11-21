@@ -2,16 +2,6 @@
 
 A safe, structured [Model Context Protocol](https://modelcontextprotocol.io) server for **OrcaSlicer** and FDM 3D printing G-code generation workflows.
 
-> **Status:** v1 implementation. Core services (workspace/artifacts, bounded profile discovery, mesh inspect/transform/merge, background slice jobs, policy/audit, CLI/doctor) are implemented and tested. Slicing execution works through a configurable engine argv template and a built-in **OrcaSlicer CLI preset** (`engine.preset = "orca"`); a real OrcaSlicer binary/image is still environment-specific and must be available/configured. See [`docs/DESIGN.md`](docs/DESIGN.md) and [`GLOSSARY.md`](GLOSSARY.md).
-
-## Goals (v1)
-
-- Generate G-code from 3D model(s) via OrcaSlicer with agent-controllable settings (profiles/presets, infill, temperatures, and key process controls).
-- Discover/index Orca presets from bounded, OS-detected common locations and explicit paths; inspect/resolve settings; create/update **workspace-managed** custom profiles/overrides.
-- Prepare meshes for slicing (**inspect, transform, merge**).
-- Operate with a safe, inspectable model: content-addressed artifacts/workspace, background slice jobs, policy/approvals/audit gates.
-- **No printer communication. No G-code execution.**
-
 ## Architecture (inspired by `mcp-cura`)
 
 `mcp-orca` is a new standalone Rust project inspired by the structure and ergonomics of [`mcp-cura`](https://github.com/martinsgmx/mcp-cura) (used as a reference only, not a fork/copy): similar layering around tools, engine runners, profiles, slicing/jobs, workspace, and safety.
