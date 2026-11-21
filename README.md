@@ -29,6 +29,7 @@ cargo build --release
 cargo run -- init --output mcp-orca.toml   # starter config
 cargo run -- --config mcp-orca.toml        # MCP server over stdio (default)
 cargo run -- --config mcp-orca.toml tools  # list tools
+cargo run -- --config mcp-orca.toml tools --json  # machine-readable catalog (risk/gate/args)
 cargo run -- --config mcp-orca.toml doctor # environment/diagnostics
 cargo run -- --config mcp-orca.toml print-config
 cargo run -- --config mcp-orca.toml approvals list

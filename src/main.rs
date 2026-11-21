@@ -104,7 +104,7 @@ enum Command {
     /// Print the fully resolved, secret-free configuration.
     PrintConfig,
     /// List MCP tools.
-    Tools,
+    Tools(ToolsArgs),
     /// Write a starter configuration file.
     Init(InitArgs),
     /// Inspect or decide approvals out of band (no MCP connection).
@@ -165,6 +165,13 @@ struct ServeArgs {
 }
 
 #[derive(Debug, Args, Default)]
+struct ToolsArgs {
+    /// Emit machine-readable JSON (name, description, arguments, risk, gate, capability).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args, Default)]
 struct DoctorArgs {
     /// `OrcaSlicer` executable name or absolute path.
     #[arg(long, value_name = "BIN")]
@@ -193,11 +200,34 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Some(Command::Tools) => {
+        Some(Command::Tools(args)) => {
             init_tracing("info");
             let registry = ToolRegistry::new();
-            for tool in registry.list_tools() {
-                println!("{}\t{}", tool.name, tool.description.unwrap_or_default());
+            if args.json {
+                let tools: Vec<_> = registry
+                    .specs()
+                    .iter()
+                    .map(|spec| {
+                        serde_json::json!({
+                            "name": spec.name,
+                            "title": spec.title,
+                            "description": spec.description,
+                            "arguments": spec.allowed_args,
+                            "risk": spec.risk,
+                            "gate": spec.gate.as_str(),
+                            "capability": spec.capability,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({"tools": tools}))
+                        .unwrap_or_else(|_| "{\"tools\":[]}".into())
+                );
+            } else {
+                for tool in registry.list_tools() {
+                    println!("{}\t{}", tool.name, tool.description.unwrap_or_default());
+                }
             }
             Ok(())
         }

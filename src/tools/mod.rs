@@ -42,6 +42,17 @@ pub enum Gate {
     Confirm,
 }
 
+impl Gate {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Policy => "policy",
+            Self::Internal => "local",
+            Self::Confirm => "confirm",
+        }
+    }
+}
+
 /// Static description of one MCP tool.
 #[derive(Clone, Copy)]
 pub struct ToolSpec {
@@ -154,6 +165,12 @@ impl ToolRegistry {
     #[must_use]
     pub fn list_tools(&self) -> Vec<Tool> {
         self.specs.iter().map(ToolSpec::tool).collect()
+    }
+
+    /// Static specs, for CLI introspection and generated documentation.
+    #[must_use]
+    pub fn specs(&self) -> &[ToolSpec] {
+        &self.specs
     }
 
     pub async fn call(

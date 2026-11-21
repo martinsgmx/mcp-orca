@@ -1,0 +1,121 @@
+# syntax=docker/dockerfile:1.7
+
+# Multi-stage, optimized build for OrcaSlicer CLI (v2.5.1)
+# Scope: OrcaSlicer CLI only (no mcp-orca). linux/amd64.
+
+ARG UBUNTU_VERSION=24.04
+ARG ORCASLICER_VERSION=v2.5.1
+ARG ORCASLICER_REPO=https://github.com/OrcaSlicer/OrcaSlicer.git
+
+############################
+# Builder: compile from source
+############################
+FROM ubuntu:${UBUNTU_VERSION} AS builder
+
+ARG ORCASLICER_VERSION
+ARG ORCASLICER_REPO
+ARG DEBIAN_FRONTEND=noninteractive
+ARG BUILD_JOBS
+
+WORKDIR /src
+
+# Build prerequisites and tools needed to fetch/build OrcaSlicer.
+# OrcaSlicer provides ./build_linux.sh and distro scripts for dependency setup.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    sudo \
+  && rm -rf /var/lib/apt/lists/*
+
+# Fetch pinned OrcaSlicer source
+RUN git clone --branch "${ORCASLICER_VERSION}" --depth 1 "${ORCASLICER_REPO}" /src/OrcaSlicer
+
+WORKDIR /src/OrcaSlicer
+
+# Install system build dependencies (as defined by OrcaSlicer scripts)
+RUN ./build_linux.sh -u
+
+# Build dependencies and OrcaSlicer (Release). This also generates the packaged
+# runtime layout under build/package via src/build_linux_image.sh.
+# Use -j when BUILD_JOBS is provided to control parallelism.
+RUN if [ -n "${BUILD_JOBS}" ]; then \
+      ./build_linux.sh -d -s -j "${BUILD_JOBS}"; \
+    else \
+      ./build_linux.sh -d -s; \
+    fi
+
+# Verify packaged CLI output exists
+RUN test -x build/package/bin/orca-slicer \
+ && test -d build/package/resources
+
+############################
+# Runtime: balanced slim CLI image
+############################
+FROM ubuntu:${UBUNTU_VERSION} AS runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG ORCASLICER_VERSION
+
+LABEL org.opencontainers.image.title="OrcaSlicer CLI" \
+      org.opencontainers.image.description="Multi-stage image providing OrcaSlicer CLI (orca-slicer) built from source." \
+      org.opencontainers.image.source="https://github.com/OrcaSlicer/OrcaSlicer" \
+      org.opencontainers.image.version="${ORCASLICER_VERSION}"
+
+# Runtime libraries/resources required for OrcaSlicer CLI slicing.
+# Kept balanced (compatibility-focused) rather than aggressively minimized.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libgtk-3-0 \
+    libwebkit2gtk-4.1-0 \
+    libjavascriptcoregtk-4.1-0 \
+    libgstreamer1.0-0 \
+    libgstreamer-gl1.0-0 \
+    libgstreamer-plugins-base1.0-0 \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-gtk3 \
+    libgl1 \
+    libegl1 \
+    libopengl0 \
+    libglu1-mesa \
+    libosmesa6 \
+    libdbus-1-3 \
+    libsecret-1-0 \
+    libcurl4 \
+    libssl3 \
+    libudev1 \
+    libspnav0 \
+    libmspack0 \
+    libwayland-client0 \
+    libwayland-cursor0 \
+    libwayland-egl1 \
+    libx11-6 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxkbcommon0 \
+    libxkbcommon-x11-0 \
+    libxrandr2 \
+    libxi6 \
+    libxcursor1 \
+    libxinerama1 \
+    libsm6 \
+    libice6 \
+    fonts-dejavu-core \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install packaged OrcaSlicer runtime (binary, resources, libs, wrappers)
+COPY --from=builder /src/OrcaSlicer/build/package /opt/orca-slicer
+
+# Provide stable CLI command name on PATH.
+# The packaged wrapper at /opt/orca-slicer/orca-slicer sets up APPDIR/env and
+# execs /opt/orca-slicer/bin/orca-slicer with bundled resources.
+RUN chmod +x /opt/orca-slicer/orca-slicer /opt/orca-slicer/bin/orca-slicer \
+ && ln -s /opt/orca-slicer/orca-slicer /usr/local/bin/orca-slicer
+
+# Direct CLI use (no xvfb, no desktop integration)
+WORKDIR /work
+ENV LC_ALL=C \
+    APPDIR=/opt/orca-slicer
+
+ENTRYPOINT ["orca-slicer"]
+CMD ["--help"]

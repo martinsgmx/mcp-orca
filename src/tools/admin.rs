@@ -216,7 +216,7 @@ fn doctor(ctx: &ToolContext, _args: Value) -> ToolFuture<'_> {
                     {"name": "audit", "ok": true, "path": ctx.audit.path(), "note": "append-only JSONL; one record per registry call"}
                 ],
                 "notes": [
-                    "Slice execution requires engine.slice_command plus a reachable binary/image for the configured runner.",
+                    "Slice execution requires engine.preset=\"orca\" or engine.slice_command, plus a reachable binary/image for the configured runner.",
                     "Essentials required for slicing: printer + filament + process (no invented defaults)."
                 ]
             }),

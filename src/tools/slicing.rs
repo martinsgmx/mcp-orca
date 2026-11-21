@@ -18,7 +18,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             name: "orca_slice",
             title: "Slice models",
-            description: "Start an OrcaSlicer slice job for one or more mesh artifacts using printer/filament/process essentials and overrides. Workspace custom profile artifacts contribute merged settings (staged as settings.json); overrides take precedence. Returns a job id immediately unless wait=true. Execution requires engine.slice_command; otherwise jobs fail with a clear configuration error.",
+            description: "Start an OrcaSlicer slice job for one or more mesh artifacts using printer/filament/process essentials and overrides. Workspace custom profile artifacts contribute merged settings (staged as settings.json); overrides take precedence. Returns a job id immediately unless wait=true. Execution requires engine.preset=\"orca\" or engine.slice_command; otherwise jobs fail with a clear configuration error.",
             allowed_args: &[
                 "model_artifact_ids", "printer", "filament", "process", "project",
                 "profiles", "overrides", "name", "wait", "wait_timeout_secs"
