@@ -86,6 +86,31 @@ impl FromStr for EngineRunner {
     }
 }
 
+/// Binary detection mode for automatic OrcaSlicer binary discovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BinaryDetection {
+    /// Use only the configured binary name, no fallback detection.
+    #[default]
+    Manual,
+    /// Try multiple common OrcaSlicer binary names and paths.
+    Auto,
+}
+
+impl FromStr for BinaryDetection {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "manual" => Ok(Self::Manual),
+            "auto" => Ok(Self::Auto),
+            other => Err(format!(
+                "unknown binary detection mode '{other}' (expected 'manual' or 'auto')"
+            )),
+        }
+    }
+}
+
 /// HTTP transport settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -152,6 +177,9 @@ impl Default for WorkspaceConfig {
 pub struct EngineConfig {
     pub runner: EngineRunner,
     pub binary: String,
+    /// Binary detection mode: manual (use only configured binary) or auto (try multiple common OrcaSlicer names).
+    #[serde(default)]
+    pub binary_detection: BinaryDetection,
     pub docker_image: Option<String>,
     pub docker_command: Vec<String>,
     /// Built-in invocation preset. Currently only `"orca"` (aliases
@@ -177,6 +205,7 @@ impl Default for EngineConfig {
         Self {
             runner: EngineRunner::Binary,
             binary: "orca-slicer".to_string(),
+            binary_detection: BinaryDetection::Auto,
             docker_image: None,
             docker_command: Vec::new(),
             preset: None,
@@ -336,6 +365,11 @@ impl Config {
         if let Ok(value) = env::var("MCP_ORCA_ENGINE_BINARY") {
             self.engine.binary = value;
         }
+        if let Ok(value) = env::var("MCP_ORCA_ENGINE_BINARY_DETECTION") {
+            if let Ok(detection) = value.parse() {
+                self.engine.binary_detection = detection;
+            }
+        }
         if let Ok(value) = env::var("MCP_ORCA_DOCKER_IMAGE") {
             if !value.is_empty() {
                 self.engine.docker_image = Some(value);
@@ -449,5 +483,30 @@ mod tests {
         let v = cfg.public_view();
         assert_eq!(v["server"]["http"]["has_token"], serde_json::json!(true));
         assert!(v.get("token").is_none());
+    }
+
+    #[test]
+    fn binary_detection_mode_defaults_to_auto() {
+        let cfg = Config::default();
+        assert_eq!(cfg.engine.binary_detection, BinaryDetection::Auto);
+    }
+
+    #[test]
+    fn binary_detection_mode_can_be_set_to_manual() {
+        let mut cfg = Config::default();
+        cfg.engine.binary_detection = BinaryDetection::Manual;
+        assert_eq!(cfg.engine.binary_detection, BinaryDetection::Manual);
+    }
+
+    #[test]
+    fn binary_detection_environment_variable() {
+        // Test that MCP_ORCA_ENGINE_BINARY_DETECTION environment variable is respected
+        std::env::set_var("MCP_ORCA_ENGINE_BINARY_DETECTION", "manual");
+        let cfg = Config::load(None).unwrap();
+        assert_eq!(cfg.engine.binary_detection, BinaryDetection::Manual);
+        std::env::set_var("MCP_ORCA_ENGINE_BINARY_DETECTION", "auto");
+        let cfg = Config::load(None).unwrap();
+        assert_eq!(cfg.engine.binary_detection, BinaryDetection::Auto);
+        std::env::remove_var("MCP_ORCA_ENGINE_BINARY_DETECTION");
     }
 }

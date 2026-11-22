@@ -34,7 +34,7 @@ use tokio::{process::Command, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    config::{Config, EngineRunner},
+    config::{BinaryDetection, Config, EngineRunner},
     error::{Error, Result},
 };
 
@@ -45,6 +45,7 @@ const MAX_LOG_BYTES: usize = 64 * 1024;
 pub struct EngineInfo {
     pub runner: EngineRunner,
     pub binary: String,
+    pub detected_binary: Option<String>,
     pub resolved_path: Option<String>,
     pub docker_image: Option<String>,
     pub available: bool,
@@ -129,14 +130,55 @@ impl Engine {
 
     async fn probe_binary(&self) -> EngineInfo {
         let binary = self.config.engine.binary.clone();
+        let detection_mode = self.config.engine.binary_detection;
+        
+        // Try to resolve the configured binary first
         let resolved_path = which::which(&binary)
             .ok()
             .map(|p| p.to_string_lossy().to_string());
+        
+        // If auto-detection is enabled and configured binary not found, try alternatives
+        let (detected_binary, final_resolved_path) = if detection_mode == BinaryDetection::Auto {
+            if resolved_path.is_none() {
+                // Try common OrcaSlicer binary names
+                let alternatives = [
+                    "OrcaSlicer",
+                    "OrcaSlicer-CLI",
+                    "OrcaSlicer.AppImage",
+                    "orcaslicer",
+                    "orcaslicer-cli",
+                    "OrcaSlicerCLI",
+                ];
+                
+                let mut found_binary: Option<String> = None;
+                let mut found_path: Option<String> = None;
+                
+                for alt in alternatives {
+                    if let Ok(path) = which::which(alt) {
+                        let path_str = path.to_string_lossy().to_string();
+                        tracing::info!("Auto-detected OrcaSlicer binary: {} at {}", alt, path_str);
+                        found_binary = Some(alt.to_string());
+                        found_path = Some(path_str);
+                        break;
+                    }
+                }
+                (found_binary, found_path)
+            } else {
+                (Some(binary.clone()), resolved_path)
+            }
+        } else {
+            (None, resolved_path)
+        };
+        
         let slice_command_configured = self.config.engine.slice_invocation_configured();
+        let binary_to_check = detected_binary.clone().unwrap_or(binary.clone());
+        let path_to_check = final_resolved_path.clone();
+        
         let mut info = EngineInfo {
             runner: EngineRunner::Binary,
             binary: binary.clone(),
-            resolved_path: resolved_path.clone(),
+            detected_binary,
+            resolved_path: path_to_check.clone(),
             docker_image: None,
             available: false,
             version: None,
@@ -144,14 +186,24 @@ impl Engine {
             slice_command_configured,
             preset: self.config.engine.preset.clone(),
         };
-        let Some(path) = resolved_path else {
+        let Some(path) = path_to_check else {
+            let detection_hint = if detection_mode == BinaryDetection::Auto {
+                " (auto-detection enabled, tried common OrcaSlicer binary names)"
+            } else {
+                ""
+            };
             info.detail = format!(
-                "host binary '{binary}' not found on PATH; configure engine.binary or use docker runner"
+                "host binary '{binary}' not found on PATH{}; configure engine.binary or use docker runner",
+                detection_hint
             );
             return info;
         };
         info.available = true;
-        info.detail = format!("found host binary at {path}");
+        if detection_mode == BinaryDetection::Auto {
+            info.detail = format!("found host binary at {path} (detected from '{}')", binary_to_check);
+        } else {
+            info.detail = format!("found host binary at {path}");
+        }
         if !slice_command_configured {
             info.detail
                 .push_str("; set engine.preset='orca' or engine.slice_command (slicing not wired)");
@@ -160,7 +212,7 @@ impl Engine {
                 .push_str("; using built-in OrcaSlicer CLI preset");
         }
         for flag in ["--version", "-v", "version", "help", "--help"] {
-            let mut cmd = Command::new(&binary);
+            let mut cmd = Command::new(&binary_to_check);
             cmd.envs(&self.config.engine.env);
             cmd.arg(flag).stdout(Stdio::piped()).stderr(Stdio::piped());
             if let Ok(Ok(out)) = timeout(Duration::from_secs(5), cmd.output()).await {
@@ -186,6 +238,7 @@ impl Engine {
         let mut info = EngineInfo {
             runner: EngineRunner::Docker,
             binary: "docker".to_string(),
+            detected_binary: None,
             resolved_path: which::which("docker")
                 .ok()
                 .map(|p| p.to_string_lossy().to_string()),

@@ -210,7 +210,7 @@ fn doctor(ctx: &ToolContext, _args: Value) -> ToolFuture<'_> {
                 "checks": [
                     {"name": "config", "ok": true},
                     {"name": "workspace", "ok": true, "root": ctx.store.root()},
-                    {"name": "engine", "ok": probe.available, "runner": probe.runner, "binary": probe.binary, "resolved_path": probe.resolved_path, "docker_image": probe.docker_image, "version": probe.version, "detail": probe.detail},
+                    {"name": "engine", "ok": probe.available, "runner": probe.runner, "binary": probe.binary, "detected_binary": probe.detected_binary, "resolved_path": probe.resolved_path, "docker_image": probe.docker_image, "version": probe.version, "detail": probe.detail},
                     {"name": "profiles", "ok": true, "indexed_entries": profile_count, "note": "bounded discovery (explicit + OS-detected defaults if enabled), no whole-system scan"},
                     {"name": "approvals", "ok": true, "pending": pending, "note": "gated calls create pending requests; decide with orca_approval_decide and retry the identical call"},
                     {"name": "audit", "ok": true, "path": ctx.audit.path(), "note": "append-only JSONL; one record per registry call"}

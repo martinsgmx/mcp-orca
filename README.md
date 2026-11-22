@@ -31,6 +31,21 @@ Configuration precedence: built-in defaults < TOML file < `MCP_ORCA_*` environme
 
 Slicing stays disabled until an invocation is configured: set `engine.preset = "orca"` **or** provide `engine.slice_command`. The adapter stages inputs into the job directory, runs the slicer with timeout + cancellation, captures logs, and imports the produced G-code as an artifact.
 
+### Automatic binary detection
+
+When `engine.binary_detection = "auto"` (default), `mcp-orca` will automatically try to discover available OrcaSlicer binaries on your system if the configured `engine.binary` is not found. It tries the following names in order:
+
+1. `OrcaSlicer` (Electron app name)
+2. `OrcaSlicer-CLI` (CLI binary)
+3. `OrcaSlicer.AppImage` (AppImage)
+4. `orcaslicer` (lowercase)
+5. `orcaslicer-cli`
+6. `OrcaSlicerCLI`
+
+This allows the server to work regardless of how OrcaSlicer was installed (system package, manual download, AppImage, etc.) without requiring explicit configuration of the exact binary name.
+
+To disable this behavior and use only the configured `engine.binary`, set `binary_detection = "manual"`.
+
 ### Built-in OrcaSlicer preset (`engine.preset = "orca"`)
 
 Uses the documented OrcaSlicer headless CLI contract (researched from the upstream wiki):
@@ -46,6 +61,8 @@ Uses the documented OrcaSlicer headless CLI contract (researched from the upstre
 runner = "binary"
 preset = "orca"
 binary = "orca-slicer"
+# Binary detection mode: "manual" (use only configured binary) or "auto" (try multiple common OrcaSlicer names)
+# binary_detection = "auto"
 # docker_image = "your-orcaslicer-image:tag"
 timeout_secs = 900
 ```

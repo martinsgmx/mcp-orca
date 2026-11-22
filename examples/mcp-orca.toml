@@ -14,6 +14,8 @@ root = "~/.local/share/mcp-orca"
 runner = "binary"
 preset = "orca"
 binary = "orca-slicer"
+# Binary detection mode: "manual" (use only configured binary) or "auto" (try multiple common OrcaSlicer names)
+# binary_detection = "auto"
 # docker_image = "your-orcaslicer-image:tag"
 timeout_secs = 900
 max_concurrent_jobs = 2
