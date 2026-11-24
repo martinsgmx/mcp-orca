@@ -18,7 +18,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             name: "orca_slice",
             title: "Slice models",
-            description: "Start an OrcaSlicer slice job for one or more mesh artifacts using printer/filament/process essentials and overrides. Workspace custom profile artifacts contribute merged settings (staged as settings.json); overrides take precedence. Returns a job id immediately unless wait=true. Execution requires engine.preset=\"orca\" or engine.slice_command; otherwise jobs fail with a clear configuration error.",
+            description: "Start an OrcaSlicer slice job for one or more mesh artifacts using printer/filament/process essentials and overrides. When a role is omitted, the defaults recorded by orca_config_setup are used; explicit arguments always win. Workspace custom profile artifacts contribute merged settings (staged as settings.json); overrides take precedence. Returns a job id immediately unless wait=true. Execution requires engine.preset=\"orca\" or engine.slice_command; otherwise jobs fail with a clear configuration error.",
             allowed_args: &[
                 "model_artifact_ids", "printer", "filament", "process", "project",
                 "profiles", "overrides", "name", "wait", "wait_timeout_secs"
@@ -31,9 +31,9 @@ pub fn specs() -> Vec<ToolSpec> {
                 schema_object(
                     json!({
                         "model_artifact_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-                        "printer": {"type": "string", "description": "Printer preset id/name/path (essential unless provided by project)."},
-                        "filament": {"type": "string", "description": "Filament preset id/name/path (essential unless provided by project)."},
-                        "process": {"type": "string", "description": "Process preset id/name/path (essential unless provided by project)."},
+                        "printer": {"type": "string", "description": "Printer preset id/name/path (essential unless provided by project or saved defaults)."},
+                        "filament": {"type": "string", "description": "Filament preset id/name/path (essential unless provided by project or saved defaults)."},
+                        "process": {"type": "string", "description": "Process preset id/name/path (essential unless provided by project or saved defaults)."},
                         "project": {"type": "string", "description": "Optional project/profile path (e.g. .3mf) if supported by target."},
                         "profiles": {"type": "array", "items": {"type": "string"}},
                         "overrides": {"type": "object", "description": "Setting overrides (infill, temps, speeds, supports, walls, retraction, cooling, flow, adhesion, motion limits, etc.) merged last, after workspace profile settings."},
@@ -146,9 +146,36 @@ fn slice(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
             });
         }
 
-        let printer = args.optional_string("printer");
-        let filament = args.optional_string("filament");
-        let process = args.optional_string("process");
+        let mut printer = args.optional_string("printer");
+        let mut filament = args.optional_string("filament");
+        let mut process = args.optional_string("process");
+
+        // Fall back to first-time setup defaults recorded from the local
+        // OrcaSlicer configuration. Explicit arguments always win.
+        let mut defaults_applied: Vec<&str> = Vec::new();
+        if printer.is_none() || filament.is_none() || process.is_none() {
+            if let Ok(Some(saved)) = crate::orca_config::Defaults::load(&ctx.config.workspace.root)
+            {
+                if printer.is_none() {
+                    if let Some(value) = saved.selection.printer {
+                        printer = Some(value);
+                        defaults_applied.push("printer");
+                    }
+                }
+                if filament.is_none() {
+                    if let Some(value) = saved.selection.filament {
+                        filament = Some(value);
+                        defaults_applied.push("filament");
+                    }
+                }
+                if process.is_none() {
+                    if let Some(value) = saved.selection.process {
+                        process = Some(value);
+                        defaults_applied.push("process");
+                    }
+                }
+            }
+        }
         let project = args.optional_string("project");
         let profiles = args
             .value("profiles")
@@ -159,7 +186,20 @@ fn slice(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let overrides = args.value("overrides").cloned().unwrap_or(json!({}));
+        let mut overrides = args.value("overrides").cloned().unwrap_or(json!({}));
+        // Merge saved default overrides beneath explicit request overrides.
+        if let Ok(Some(saved)) = crate::orca_config::Defaults::load(&ctx.config.workspace.root) {
+            if !saved.overrides.is_empty() {
+                if let (Value::Object(base), Value::Object(top)) =
+                    (serde_json::to_value(&saved.overrides).unwrap_or(json!({})), &mut overrides)
+                {
+                    for (k, v) in base {
+                        top.entry(k).or_insert(v);
+                    }
+                    defaults_applied.push("overrides");
+                }
+            }
+        }
         let name = args
             .optional_string("name")
             .unwrap_or_else(|| "slice".to_string());
@@ -181,12 +221,18 @@ fn slice(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
         .collect();
         if !missing.is_empty() && project.is_none() {
             return Err(Error::InvalidArguments(format!(
-                "slice requires essential presets: missing {}. Provide printer, filament, and process (or a supported project). No invented defaults.",
+                "slice requires essential presets: missing {}. Provide printer, filament, and process explicitly, run orca_config_setup to record local defaults, or pass a supported project. No invented defaults.",
                 missing.join(", ")
             )));
         }
 
-        let essentials = json!({"printer": printer, "filament": filament, "process": process, "project": project});
+        let essentials = json!({
+            "printer": printer,
+            "filament": filament,
+            "process": process,
+            "project": project,
+            "defaults_applied": defaults_applied,
+        });
         let preset_paths = resolve_preset_paths(
             ctx,
             [printer.as_deref(), filament.as_deref(), process.as_deref()],
@@ -224,6 +270,7 @@ fn slice(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
                 "name": name,
                 "model_artifact_ids": model_artifact_ids,
                 "essentials": essentials,
+                "defaults_applied": defaults_applied,
                 "profiles": args.value("profiles").cloned().unwrap_or(json!([])),
                 "overrides": args.value("overrides").cloned().unwrap_or(json!({})),
             }),
