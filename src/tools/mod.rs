@@ -8,6 +8,7 @@ pub mod args;
 pub mod artifacts;
 pub mod gcode;
 pub mod geometry;
+pub mod orca_config;
 pub mod profiles;
 pub mod slicing;
 
@@ -152,6 +153,7 @@ impl ToolRegistry {
         specs.extend(artifacts::specs());
         specs.extend(geometry::specs());
         specs.extend(profiles::specs());
+        specs.extend(orca_config::specs());
         specs.extend(slicing::specs());
         specs.extend(gcode::specs());
 

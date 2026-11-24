@@ -22,6 +22,7 @@ pub mod engine;
 pub mod error;
 pub mod gcode;
 pub mod geometry;
+pub mod orca_config;
 pub mod profiles;
 pub mod safety;
 pub mod server;

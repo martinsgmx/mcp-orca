@@ -5,6 +5,7 @@
 //! - `meta/<artifact_id>.json` artifact metadata
 //! - `jobs/<job_id>/`          slice job inputs, logs, and outputs
 //! - `profiles/`               custom profiles/overrides written by tools
+//! - `orca_config/defaults.json` first-time local OrcaSlicer selection/defaults
 //! - `tmp/`                    atomic-write staging
 
 use std::{
