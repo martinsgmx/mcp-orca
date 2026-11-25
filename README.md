@@ -123,15 +123,15 @@ Admin/approvals: `orca_server_info`, `orca_engine_info`, `orca_policy_info`, `or
 
 Local OrcaSlicer config: `orca_config_scan` (bounded read-only discovery of user JSON presets and system `*.opc` caches), `orca_config_profiles` (list printer/filament/process presets with filter), `orca_config_resolve` (resolve `inherits`/`includes` and extract printing essentials for one preset or a printer+filament+process selection), `orca_config_setup` (first-time setup: detect the active OrcaSlicer selection or accept explicit names, save defaults in the workspace), `orca_config_defaults` (read the saved defaults and essentials snapshot). `orca_slice` reuses these saved defaults when printer/filament/process are omitted; explicit arguments win.
 
-Artifacts: `orca_artifact_import`, `orca_artifact_list`, `orca_artifact_get`, `orca_artifact_read_text`, `orca_artifact_export`, `orca_artifact_delete`.
+Artifacts: `orca_artifact_import` (reports requested/stored kind; preserves explicit mesh/gcode intent), `orca_artifact_list`, `orca_artifact_get`, `orca_artifact_read_text`, `orca_artifact_update_metadata` (repair name/kind/metadata without changing bytes), `orca_artifact_export`, `orca_artifact_delete`.
 
-Mesh: `orca_mesh_inspect` (STL + OBJ), `orca_mesh_transform` (translate/rotate/scale/mirror; STL or OBJ in, binary STL out), `orca_mesh_merge` (STL/OBJ in, binary STL out).
+Mesh: `orca_mesh_inspect` (STL + OBJ; can inspect misclassified mesh artifacts by format/content signature with a warning), `orca_mesh_transform` (translate/rotate/scale/mirror; STL or OBJ in, binary STL out), `orca_mesh_merge` (STL/OBJ in, binary STL out).
 
-Profiles: `orca_profile_list`, `orca_profile_get` (discovered entries + workspace artifacts), `orca_profile_refresh`, `orca_profile_resolve` (merged effective settings), `orca_profile_create`, `orca_profile_update` (new content-addressed version).
+Profiles: `orca_profile_list`, `orca_profile_get` (discovered entries + workspace artifacts), `orca_profile_refresh`, `orca_profile_resolve` (merged effective settings, completeness reason/next checks). Discovery is bounded but path-aware: Orca user preset dirs like `user/default/{machine,filament,process}` are recognized, and list/refresh report `discovery_coverage`/`scanned_user_dirs`/`excluded_patterns`.
 
 Slicing/jobs: `orca_slice`, `orca_slice_status`, `orca_slice_wait`, `orca_slice_cancel`, `orca_slice_list`.
 
-G-code: `orca_gcode_inspect`.
+G-code: `orca_gcode_inspect` (reports computed metrics, slicer summary comments when present, discrepancy warnings, and safety-relevant command scan).
 
 ## Tests
 

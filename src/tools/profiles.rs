@@ -180,12 +180,16 @@ fn list(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
             }
         }
 
+        let coverage = ctx.profiles.discovery_coverage(&catalog);
         Ok(json_result(
             &json!({
                 "scanned_dirs": catalog.scanned_dirs,
+                "scanned_user_dirs": catalog.scanned_user_dirs,
                 "count": entries.len(),
                 "entries": entries,
                 "warnings": catalog.warnings,
+                "discovery_coverage": coverage,
+                "excluded_patterns": coverage.excluded_patterns,
             }),
             None,
         ))
@@ -252,11 +256,15 @@ fn get(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
 fn refresh(ctx: &ToolContext, _args: Value) -> ToolFuture<'_> {
     Box::pin(async move {
         let catalog = ctx.profiles.refresh()?;
+        let coverage = ctx.profiles.discovery_coverage(&catalog);
         Ok(json_result(
             &json!({
                 "scanned_dirs": catalog.scanned_dirs,
+                "scanned_user_dirs": catalog.scanned_user_dirs,
                 "count": catalog.entries.len(),
                 "warnings": catalog.warnings,
+                "discovery_coverage": coverage,
+                "excluded_patterns": coverage.excluded_patterns,
             }),
             None,
         ))
@@ -337,6 +345,21 @@ fn resolve(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
         let settings_complete = applied_from
             .iter()
             .all(|v| v["selection"]["settings_source"].as_str() == Some("workspace_artifact"));
+        let has_native_reference = applied_from
+            .iter()
+            .any(|v| v["selection"]["settings_source"].as_str() == Some("native_reference"));
+        let has_unresolved = applied_from
+            .iter()
+            .any(|v| v["selection"]["settings_source"].as_str() == Some("none"));
+        let (completeness_reason, action_required) = if settings_complete {
+            ("workspace_artifacts", false)
+        } else if has_unresolved {
+            ("unresolved_selection", true)
+        } else if has_native_reference {
+            ("native_reference", false)
+        } else {
+            ("incomplete", false)
+        };
 
         Ok(json_result(
             &json!({
@@ -353,6 +376,9 @@ fn resolve(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
                 "overrides": overrides,
                 "effective_settings": if effective.is_empty() { Value::Null } else { Value::Object(effective) },
                 "settings_complete": settings_complete,
+                "completeness_reason": completeness_reason,
+                "action_required": action_required,
+                "recommended_next_checks": ["slice", "inspect_gcode_temps"],
                 "warnings": warnings,
                 "discovery": {
                     "os_defaults_enabled": ctx.config.profiles.use_os_defaults,
@@ -361,7 +387,8 @@ fn resolve(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
                 },
                 "notes": [
                     "Workspace custom profile artifacts (art_*) contribute their settings. Native Orca preset formats are indexed/resolved by reference only; parse them with the target CLI (engine.slice_command).",
-                    "Overrides are merged last and take precedence."
+                    "Overrides are merged last and take precedence.",
+                    "settings_complete=false with completeness_reason=native_reference is expected when using native Orca presets; slicing can still proceed."
                 ]
             }),
             None,
@@ -433,16 +460,28 @@ fn resolve_selection(
         );
     }
 
-    if Path::new(value).is_file() {
-        return (
-            json!({
-                "input": value,
-                "source": "explicit_path",
-                "path": value,
-                "settings_source": "native_reference",
-            }),
-            None,
-        );
+    let expanded = crate::workspace::expand_tilde(value);
+    if Path::new(&expanded).is_file() {
+        let indexed = catalog
+            .entries
+            .iter()
+            .any(|e| e.path == value || e.path == expanded.to_string_lossy().as_ref());
+        let mut info = json!({
+            "input": value,
+            "source": "explicit_path",
+            "path": expanded.to_string_lossy(),
+            "settings_source": "native_reference",
+            "indexed": indexed,
+        });
+        if !indexed {
+            info["hint"] = json!(
+                "File exists but is not in the profile index. Run orca_profile_refresh or add its directory to profiles.search_paths to make it discoverable by orca_profile_list."
+            );
+            warnings.push(format!(
+                "selection '{value}' resolved as an explicit path but is not indexed; consider adding its directory to profiles.search_paths"
+            ));
+        }
+        return (info, None);
     }
 
     warnings.push(format!(

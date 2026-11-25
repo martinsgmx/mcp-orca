@@ -383,6 +383,44 @@ impl ArtifactStore {
         Ok(record)
     }
 
+    /// Update non-content metadata for an existing artifact record.
+    ///
+    /// Content and content-addressed id are unchanged; only metadata fields are
+    /// rewritten. This is an audit-worthy workspace mutation but does not alter
+    /// artifact bytes.
+    pub fn update_metadata(
+        &self,
+        id: &str,
+        name: Option<String>,
+        kind: Option<ArtifactKind>,
+        metadata_patch: Option<Value>,
+    ) -> Result<ArtifactRecord> {
+        let mut record = self.get(id)?;
+        if let Some(name) = name {
+            let name = sanitize_name(&name, &record.format);
+            if !name.is_empty() {
+                record.name = name;
+            }
+        }
+        if let Some(kind) = kind {
+            record.kind = kind;
+        }
+        if let Some(patch) = metadata_patch {
+            match (&mut record.metadata, patch) {
+                (Value::Object(base), Value::Object(patch_map)) => {
+                    for (k, v) in patch_map {
+                        base.insert(k, v);
+                    }
+                }
+                (_, other) => {
+                    record.metadata = other;
+                }
+            }
+        }
+        self.write_record(&record)?;
+        Ok(record)
+    }
+
     fn blob_path(&self, sha256: &str, format: &str) -> PathBuf {
         self.blobs.join(format!("{sha256}.{format}"))
     }
