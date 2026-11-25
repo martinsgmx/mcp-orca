@@ -74,6 +74,8 @@ pub struct ProfileEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileCatalog {
     pub scanned_dirs: Vec<String>,
+    #[serde(default)]
+    pub scanned_user_dirs: Vec<String>,
     pub entries: Vec<ProfileEntry>,
     pub warnings: Vec<String>,
 }
@@ -93,6 +95,18 @@ impl ProfileCatalog {
     }
 }
 
+/// Describes how profile discovery was performed (for tool output transparency).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryCoverage {
+    pub use_os_defaults: bool,
+    pub search_paths: Vec<String>,
+    pub scanned_dirs: Vec<String>,
+    pub scanned_user_dirs: Vec<String>,
+    pub excluded_patterns: Vec<String>,
+    pub max_scan_depth: usize,
+    pub notes: Vec<String>,
+}
+
 /// Profile index with lazy scan and cache.
 #[derive(Debug)]
 pub struct ProfileIndex {
@@ -106,6 +120,27 @@ impl ProfileIndex {
             config,
             catalog: RwLock::new(None),
         })
+    }
+
+    #[must_use]
+    pub fn discovery_coverage(&self, catalog: &ProfileCatalog) -> DiscoveryCoverage {
+        DiscoveryCoverage {
+            use_os_defaults: self.config.profiles.use_os_defaults,
+            search_paths: self.config.profiles.search_paths.clone(),
+            scanned_dirs: catalog.scanned_dirs.clone(),
+            scanned_user_dirs: catalog.scanned_user_dirs.clone(),
+            excluded_patterns: vec![
+                "Hidden dotfiles/directories (except scan roots)".into(),
+                "JSON/INI/CFG files outside preset-relevant names or preset directories (machine/filament/process/print/preset)".into(),
+                "Non-preset file types (except .3mf, .orca_printer, .orca_filament, selected .zip bundles)".into(),
+                "Symlinks are not followed; scan depth limited to 10".into(),
+            ],
+            max_scan_depth: MAX_SCAN_DEPTH,
+            notes: vec![
+                "Discovery is bounded: explicit search_paths + OS-detected common defaults (when enabled) + workspace/profiles.".into(),
+                "If a preset exists on disk but is not indexed, pass its explicit path to orca_profile_resolve or add its directory to profiles.search_paths.".into(),
+            ],
+        }
     }
 
     pub fn catalog(&self) -> Result<Arc<ProfileCatalog>> {
@@ -128,7 +163,11 @@ impl ProfileIndex {
             if !dir.is_dir() {
                 continue;
             }
-            catalog.scanned_dirs.push(dir.to_string_lossy().to_string());
+            let dir_str = dir.to_string_lossy().to_string();
+            catalog.scanned_dirs.push(dir_str.clone());
+            if is_user_preset_dir(&dir) {
+                catalog.scanned_user_dirs.push(dir_str);
+            }
             for entry in WalkDir::new(&dir)
                 .max_depth(MAX_SCAN_DEPTH)
                 .follow_links(false)
@@ -142,6 +181,15 @@ impl ProfileIndex {
                     continue;
                 }
                 let path = entry.path().to_path_buf();
+                // Track user preset subdirs encountered during scan for coverage reporting.
+                if let Some(parent) = path.parent() {
+                    if is_user_preset_dir(parent) {
+                        let parent_str = parent.to_string_lossy().to_string();
+                        if !catalog.scanned_user_dirs.iter().any(|d| d == &parent_str) {
+                            catalog.scanned_user_dirs.push(parent_str);
+                        }
+                    }
+                }
                 if !seen.insert(path.clone()) {
                     continue;
                 }
@@ -150,6 +198,8 @@ impl ProfileIndex {
                 }
             }
         }
+        catalog.scanned_user_dirs.sort();
+        catalog.scanned_user_dirs.dedup();
 
         catalog.entries.sort_by(|a, b| {
             a.kind.as_str().cmp(b.kind.as_str()).then_with(|| {
@@ -253,15 +303,20 @@ fn classify_entry(path: &Path, source: &str) -> Option<ProfileEntry> {
         .to_ascii_lowercase();
     let name_os = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let lower = name_os.to_ascii_lowercase();
+    let dir_hint = kind_hint_from_path(path);
 
     let (kind, is_candidate) = match ext.as_str() {
         "3mf" => (ProfileKind::Project, true),
-        "orca_printer" | "orca_filament" => (classify_by_name(&lower, &ext), true),
-        "json" => (
-            classify_by_name(&lower, &ext),
-            likely_preset_json(path, &lower),
-        ),
-        "ini" | "cfg" => (classify_by_name(&lower, &ext), likely_preset_ini(&lower)),
+        "orca_printer" | "orca_filament" => (classify_by_name(&lower, &ext).or_hint(dir_hint), true),
+        "json" => {
+            let kind = classify_by_name(&lower, &ext).or_hint(dir_hint);
+            let candidate = likely_preset_json(path, &lower) || dir_hint.is_some();
+            (kind, candidate)
+        }
+        "ini" | "cfg" => {
+            let kind = classify_by_name(&lower, &ext).or_hint(dir_hint);
+            (kind, likely_preset_ini(&lower) || dir_hint.is_some())
+        }
         "zip" => (
             ProfileKind::Bundle,
             lower.contains("profile") || lower.contains("preset") || lower.contains("orca"),
@@ -298,6 +353,49 @@ fn classify_entry(path: &Path, source: &str) -> Option<ProfileEntry> {
         modified_at,
         source: source.to_string(),
     })
+}
+
+trait KindHint {
+    fn or_hint(self, hint: Option<ProfileKind>) -> Self;
+}
+
+impl KindHint for ProfileKind {
+    fn or_hint(self, hint: Option<ProfileKind>) -> Self {
+        if matches!(self, ProfileKind::Unknown) {
+            hint.unwrap_or(self)
+        } else {
+            self
+        }
+    }
+}
+
+/// Infer profile kind from ancestor directory names (Orca user/system layout).
+fn kind_hint_from_path(path: &Path) -> Option<ProfileKind> {
+    for ancestor in path.ancestors().skip(1).take(6) {
+        let Some(name) = ancestor.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let lower = name.to_ascii_lowercase();
+        match lower.as_str() {
+            "machine" | "machines" | "printer" | "printers" => return Some(ProfileKind::Printer),
+            "filament" | "filaments" | "material" | "materials" => {
+                return Some(ProfileKind::Filament)
+            }
+            "process" | "processes" | "print" | "prints" | "preset" | "presets" => {
+                return Some(ProfileKind::Process)
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_user_preset_dir(path: &Path) -> bool {
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    lower.contains("/user/")
+        || lower.contains("\\user\\")
+        || lower.contains("/user_presets")
+        || lower.contains("\\user_presets")
 }
 
 fn classify_by_name(lower_name: &str, ext: &str) -> ProfileKind {

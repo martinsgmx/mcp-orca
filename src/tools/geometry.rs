@@ -76,20 +76,44 @@ fn inspect(ctx: &ToolContext, args: Value) -> ToolFuture<'_> {
         let args = Args::parse(Some(args), &["artifact_id"])?;
         let id = args.required_string("artifact_id")?;
         let record = ctx.store.get(&id)?;
+        let mut warnings = Vec::new();
         if !matches!(record.kind, crate::workspace::ArtifactKind::Mesh) {
+            // Robustness: accept STL/OBJ by format/content signature when kind is 'other'.
+            let bytes = ctx.store.read_bytes(&id)?;
+            let fmt = record.format.to_ascii_lowercase();
+            let mesh_by_format = matches!(fmt.as_str(), "stl" | "obj");
+            let mesh_by_content = crate::geometry::parse_mesh(&bytes, &record.format).is_some();
+            if mesh_by_format || mesh_by_content {
+                warnings.push(format!(
+                    "artifact '{}' has kind '{}' but looks like a mesh (format '{}'); inspected as mesh. Consider orca_artifact_update_metadata to repair kind.",
+                    record.id,
+                    record.kind.as_str(),
+                    record.format
+                ));
+                let stats = crate::geometry::inspect_mesh_bytes(&bytes, &record.format);
+                let result = json!({
+                    "artifact": {"id": record.id, "name": record.name, "kind": record.kind.as_str(), "format": record.format, "bytes": record.bytes},
+                    "mesh": stats,
+                    "warnings": warnings,
+                });
+                return Ok(json_result(&result, None));
+            }
             return Err(Error::InvalidArguments(format!(
-                "artifact '{id}' is not a mesh"
+                "artifact '{id}' is not a mesh (kind={}, format={}); use orca_artifact_update_metadata if this classification is wrong",
+                record.kind.as_str(),
+                record.format
             )));
         }
         let bytes = ctx.store.read_bytes(&id)?;
         let stats = crate::geometry::inspect_mesh_bytes(&bytes, &record.format);
-        Ok(json_result(
-            &json!({
-                "artifact": {"id": record.id, "name": record.name, "format": record.format, "bytes": record.bytes},
-                "mesh": stats,
-            }),
-            None,
-        ))
+        let mut result = json!({
+            "artifact": {"id": record.id, "name": record.name, "kind": record.kind.as_str(), "format": record.format, "bytes": record.bytes},
+            "mesh": stats,
+        });
+        if !warnings.is_empty() {
+            result["warnings"] = json!(warnings);
+        }
+        Ok(json_result(&result, None))
     })
 }
 
